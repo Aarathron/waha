@@ -125,6 +125,14 @@ export class BanPreventionDatabaseService implements OnModuleInit, OnModuleDestr
     return result.rows[0]?.daily_quota || 0;
   }
 
+  async resetDailyQuota(sessionName: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE warmup_configs SET daily_quota = 0, start_date = NOW(), last_reset = NOW(), updated_at = NOW()
+       WHERE session_name = $1`,
+      [sessionName]
+    );
+  }
+
   async resetAllDailyQuotas(): Promise<number> {
     const result = await this.pool.query(
       `UPDATE warmup_configs SET daily_quota = 0, last_reset = NOW(), updated_at = NOW()

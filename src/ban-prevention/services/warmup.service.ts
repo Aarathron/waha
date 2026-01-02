@@ -213,8 +213,16 @@ export class WarmupService {
    * Force reset a session's warmup (use with caution - for testing or new numbers)
    */
   async resetWarmup(sessionName: string): Promise<void> {
-    await this.db.updateWarmupStage(sessionName, 'PHASE_1_PROFILE');
-    await this.db.resetAllDailyQuotas();
+    // First, ensure the warmup config exists (creates if not)
+    let config = await this.db.getWarmupConfig(sessionName);
+    if (!config) {
+      config = await this.db.createWarmupConfig(sessionName);
+      this.logger.info({ sessionName }, 'Created new warmup config during reset');
+    } else {
+      // Reset existing config
+      await this.db.updateWarmupStage(sessionName, 'PHASE_1_PROFILE');
+      await this.db.resetDailyQuota(sessionName);
+    }
     this.logger.warn({ sessionName }, 'Warmup reset to Phase 1');
   }
 
