@@ -33,6 +33,7 @@ import {
   getPinoLogLevel,
   getPinoTransport,
 } from '@waha/utils/logging';
+import { BanPreventionModule } from '@waha/ban-prevention';
 import * as Joi from 'joi';
 import { LoggerModule } from 'nestjs-pino';
 import { Logger as NestJSPinoLogger } from 'nestjs-pino';
@@ -136,7 +137,10 @@ const IMPORTS_MEDIA = [
   MediaLocalStorageModule,
 ];
 
-const IMPORTS = [...IMPORTS_CORE, ...IMPORTS_MEDIA];
+// Ban Prevention Module for 21-day warmup and rate limiting
+const IMPORTS_BAN_PREVENTION = [BanPreventionModule];
+
+const IMPORTS = [...IMPORTS_CORE, ...IMPORTS_MEDIA, ...IMPORTS_BAN_PREVENTION];
 
 export const CONTROLLERS = [
   AuthController,

@@ -6,9 +6,11 @@ import {
   Put,
   Query,
   UsePipes,
+  UseInterceptors,
   ValidationPipe,
 } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { BanPreventionInterceptor } from '@waha/ban-prevention';
 import { WAHAValidationPipe } from '@waha/nestjs/pipes/WAHAValidationPipe';
 import {
   GetChatMessagesFilter,
@@ -52,6 +54,7 @@ import {
 @ApiSecurity('api_key')
 @Controller('api')
 @ApiTags('📤 Chatting')
+@UseInterceptors(BanPreventionInterceptor)
 export class ChattingController {
   constructor(private manager: SessionManager) {}
 

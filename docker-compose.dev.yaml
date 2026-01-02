@@ -1,0 +1,139 @@
+# Development Docker Compose for WAHA with Ban Prevention
+# Run with: docker-compose -f docker-compose.dev.yaml up -d
+
+services:
+  waha:
+    # Use pre-built image for initial testing
+    # Switch to build when adding ban prevention code:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    image: devlikeapro/waha:latest
+    restart: unless-stopped
+
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '50m'
+        max-file: '5'
+
+    ports:
+      - '3000:3000/tcp'
+
+    volumes:
+      # Store sessions locally
+      - './sessions:/app/.sessions'
+      # Save media files
+      - './media:/app/.media'
+      # Development: mount source for hot reload (optional)
+      # - './src:/app/src'
+
+    environment:
+      # Security
+      WAHA_API_KEY: ${WAHA_API_KEY:-dev-api-key-change-in-production}
+      WAHA_DASHBOARD_USERNAME: admin
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-admin123}
+      WHATSAPP_SWAGGER_USERNAME: admin
+      WHATSAPP_SWAGGER_PASSWORD: ${WHATSAPP_SWAGGER_PASSWORD:-swagger123}
+
+      # Enable dashboard and swagger
+      WAHA_DASHBOARD_ENABLED: 'true'
+      WHATSAPP_SWAGGER_ENABLED: 'true'
+
+      # Use NOWEB engine (Baileys - lightweight, no browser)
+      WHATSAPP_DEFAULT_ENGINE: NOWEB
+
+      # Base URL
+      WAHA_BASE_URL: http://localhost:3000
+
+      # Logging
+      WAHA_LOG_FORMAT: PRETTY
+      WAHA_LOG_LEVEL: debug
+      WAHA_PRINT_QR: 'true'
+
+      # Media storage
+      WAHA_MEDIA_STORAGE: LOCAL
+      WHATSAPP_FILES_LIFETIME: 0
+      WHATSAPP_FILES_FOLDER: /app/.media
+
+      # PostgreSQL for sessions (optional - uses local storage by default)
+      # WHATSAPP_SESSIONS_POSTGRESQL_URL: postgres://postgres:postgres@postgres:5432/waha?sslmode=disable
+
+      # Ban Prevention Database (our custom addition)
+      BAN_PREVENTION_DATABASE_URL: postgres://postgres:postgres@postgres:5432/waha?sslmode=disable
+
+      # Redis for rate limiting (optional but recommended)
+      # REDIS_URL: redis://redis:6379
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: waha
+
+    ports:
+      - '5432:5432'
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Initialize ban prevention tables
+      - ./init-db:/docker-entrypoint-initdb.d
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '50m'
+        max-file: '5'
+
+  # Optional: Redis for rate limiting
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+    ports:
+      - '6379:6379'
+
+    volumes:
+      - redis_data:/data
+
+    command: redis-server --appendonly yes
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '50m'
+        max-file: '5'
+
+volumes:
+  postgres_data:
+  redis_data:
