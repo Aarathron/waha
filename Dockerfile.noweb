@@ -26,12 +26,17 @@ ENV YARN_CHECKSUM_BEHAVIOR=update
 
 RUN npm install -g corepack && corepack enable
 RUN yarn set version 4.9.2
-RUN yarn install
+
+# Configure yarn for better network reliability
+ENV YARN_NETWORK_TIMEOUT=300000
+ENV YARN_NETWORK_CONCURRENCY=4
+
+RUN yarn install --network-timeout 300000
 
 # App
 WORKDIR /git
 ADD . /git
-RUN yarn install
+RUN yarn install --network-timeout 300000
 RUN yarn build && find ./dist -name "*.d.ts" -delete
 
 #
