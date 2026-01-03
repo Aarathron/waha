@@ -183,7 +183,7 @@ import get from 'lodash/get';
 import keyBy from 'lodash/keyBy';
 import max from 'lodash/max';
 import uniq from 'lodash/uniq';
-import * as NodeCache from 'node-cache';
+import NodeCache from 'node-cache';
 import {
   filter,
   fromEvent,

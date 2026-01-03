@@ -1,7 +1,7 @@
 import * as process from 'node:process';
 
 import { parseBool } from '@waha/helpers';
-import * as basicAuth from 'express-basic-auth';
+import basicAuth from 'express-basic-auth';
 import { Auth } from '@waha/core/auth/config';
 
 export function BullAuthMiddleware() {

@@ -1,5 +1,5 @@
 import { ChatWootAPIConfig } from '@waha/apps/chatwoot/client/interfaces';
-import * as NodeCache from 'node-cache';
+import NodeCache from 'node-cache';
 
 import { IConversationCache } from './IConversationCache';
 import { ContactIds } from '@waha/apps/chatwoot/client/ConversationService';

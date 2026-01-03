@@ -140,7 +140,7 @@ import {
 import { PaginatorInMemory } from '@waha/utils/Paginator';
 import { sleep, waitUntil } from '@waha/utils/promiseTimeout';
 import { onlyEvent } from '@waha/utils/reactive/ops/onlyEvent';
-import * as NodeCache from 'node-cache';
+import NodeCache from 'node-cache';
 import {
   filter,
   groupBy,

@@ -47,7 +47,7 @@ import axios from 'axios';
 import axiosRetry from 'axios-retry';
 import * as fs from 'fs';
 import find from 'lodash/find';
-import * as NodeCache from 'node-cache';
+import NodeCache from 'node-cache';
 import { Logger } from 'pino';
 import {
   BehaviorSubject,
