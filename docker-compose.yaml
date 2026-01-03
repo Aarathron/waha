@@ -2,11 +2,10 @@
 services:
   waha:
     restart: always
-    # https://waha.devlike.pro/docs/how-to/engines/#docker-images
-    # https://portal.devlike.pro/docker-image
-    # image: devlikeapro/waha-plus
-    # WAHA Core
-    image: waha-custom:latest
+    # Build from source (removes session name restriction)
+    build:
+      context: .
+      dockerfile: Dockerfile
 
     # Add "dns" if you have a problem with resolving "web.whatsapp.com"
     dns:
