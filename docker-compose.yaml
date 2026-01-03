@@ -3,9 +3,10 @@ services:
   waha:
     restart: always
     # Build from source (removes session name restriction)
+    # Using NOWEB-optimized Dockerfile for faster builds and smaller image
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.noweb
 
     # Add "dns" if you have a problem with resolving "web.whatsapp.com"
     dns:
