@@ -1,5 +1,5 @@
 import { Processor } from '@nestjs/bullmq';
-import * as ms from 'ms';
+import ms from 'ms';
 import { JOB_CONCURRENCY } from '@waha/apps/app_sdk/constants';
 import { JobLink } from '@waha/apps/app_sdk/JobUtils';
 import { QueueName } from '@waha/apps/chatwoot/consumers/QueueName';

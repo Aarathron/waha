@@ -1,4 +1,4 @@
-import * as ms from 'ms';
+import ms from 'ms';
 import { Option } from 'commander';
 import { Locale } from '@waha/apps/chatwoot/i18n/locale';
 
