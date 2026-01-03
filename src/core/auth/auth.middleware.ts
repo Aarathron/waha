@@ -3,7 +3,7 @@ import {
   NestMiddleware,
   UnauthorizedException,
 } from '@nestjs/common';
-import * as passport from 'passport';
+import passport from 'passport';
 
 import { IApiKeyAuth } from './auth';
 
