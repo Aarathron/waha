@@ -84,9 +84,8 @@ RUN \
 #
 FROM node:${NODE_IMAGE_TAG} AS release
 ENV PUPPETEER_SKIP_DOWNLOAD=True
-# Quick fix for memory potential memory leaks
-# https://github.com/devlikeapro/waha/issues/347
-ENV NODE_OPTIONS="--max-old-space-size=16384"
+# Memory settings are now dynamically set in entrypoint.sh based on engine type
+# GOWS: 2GB, NOWEB: 4GB, WEBJS: 8GB (can be overridden via NODE_OPTIONS env var)
 ARG USE_BROWSER=chromium
 ARG WHATSAPP_DEFAULT_ENGINE
 

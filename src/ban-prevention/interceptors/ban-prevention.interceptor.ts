@@ -5,6 +5,7 @@ import {
   CallHandler,
   HttpException,
   HttpStatus,
+  Optional,
 } from '@nestjs/common';
 import { Observable, from, throwError } from 'rxjs';
 import { switchMap, tap, catchError } from 'rxjs/operators';
@@ -30,18 +31,22 @@ export interface BanPreventionError {
 @Injectable()
 export class BanPreventionInterceptor implements NestInterceptor {
   private logger: Logger;
+  private enabled: boolean;
 
   constructor(
-    private warmupService: WarmupService,
-    private rateLimitService: RecipientRateLimitService,
-    private config: BanPreventionConfig,
-    private db: BanPreventionDatabaseService
+    @Optional() private warmupService: WarmupService,
+    @Optional() private rateLimitService: RecipientRateLimitService,
+    @Optional() private config: BanPreventionConfig,
+    @Optional() private db: BanPreventionDatabaseService
   ) {
     this.logger = pino().child({ name: 'BanPreventionInterceptor' });
+    // If dependencies are not available, disable the interceptor
+    this.enabled = !!(this.warmupService && this.rateLimitService && this.config && this.db && this.config.enabled);
   }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
-    if (!this.config.enabled) {
+    // Pass through if ban prevention module is not loaded or disabled
+    if (!this.enabled) {
       return next.handle();
     }
 

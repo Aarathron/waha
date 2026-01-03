@@ -176,7 +176,13 @@ import { exclude } from '@waha/utils/reactive/ops/exclude';
 import { SingleDelayedJobRunner } from '@waha/utils/SingleDelayedJobRunner';
 import { SinglePeriodicJobRunner } from '@waha/utils/SinglePeriodicJobRunner';
 import { StatusTracker } from '@waha/utils/StatusTracker';
-import * as lodash from 'lodash';
+// Optimized lodash imports - only import what's needed to reduce bundle size
+import chunk from 'lodash/chunk';
+import difference from 'lodash/difference';
+import get from 'lodash/get';
+import keyBy from 'lodash/keyBy';
+import max from 'lodash/max';
+import uniq from 'lodash/uniq';
 import * as NodeCache from 'node-cache';
 import {
   filter,
@@ -710,8 +716,8 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
         let votes: string[] = key.fromMe
           ? [...myIds, ...participantIds]
           : [...participantIds, ...myIds];
-        creators = lodash.uniq(creators.filter(Boolean));
-        votes = lodash.uniq(votes.filter(Boolean));
+        creators = uniq(creators.filter(Boolean));
+        votes = uniq(votes.filter(Boolean));
         let found = false;
         for (const [pollCreatorJid, voterJid] of pairs(creators, votes)) {
           try {
@@ -1354,7 +1360,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   @Activity()
   public async createLabel(label: LabelDTO): Promise<Label> {
     const labels = await this.store.getLabels();
-    const highestLabelId = lodash.max(
+    const highestLabelId = max(
       labels.map((label) => parseInt(label.id)),
     );
     const labelId = highestLabelId ? highestLabelId + 1 : 1;
@@ -1419,8 +1425,8 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     const labelsIds = labels.map((label) => label.id);
     const currentLabels = await this.store.getChatLabels(jid);
     const currentLabelsIds = currentLabels.map((label) => label.id);
-    const addLabelsIds = lodash.difference(labelsIds, currentLabelsIds);
-    const removeLabelsIds = lodash.difference(currentLabelsIds, labelsIds);
+    const addLabelsIds = difference(labelsIds, currentLabelsIds);
+    const removeLabelsIds = difference(currentLabelsIds, labelsIds);
     for (const labelId of addLabelsIds) {
       await this.sock.addChatLabel(jid, labelId);
     }
@@ -1576,7 +1582,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   public async getGroups(pagination: PaginationParams) {
     const groups = await this.store.getGroups(pagination);
     // return {id: group} mapping for backward compatability
-    return lodash.keyBy(groups, 'id');
+    return keyBy(groups, 'id');
   }
 
   protected removeGroupsFieldParticipant(group: any) {
@@ -1747,7 +1753,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     if (!batchSize || batchSize == 0) {
       batchSize = 5_000;
     }
-    const chunks = lodash.chunk(jids, batchSize);
+    const chunks = chunk(jids, batchSize);
     if (chunks.length == 0) {
       throw new UnprocessableEntityException('No participants to send status');
     }
@@ -2653,7 +2659,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     const presences: WAHAPresenceData[] = [];
     for (const participant in storedPresences) {
       const data: PresenceData = storedPresences[participant];
-      const lastKnownPresence = lodash.get(
+      const lastKnownPresence = get(
         PresenceStatuses,
         data.lastKnownPresence,
         data.lastKnownPresence,

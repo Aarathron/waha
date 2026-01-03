@@ -5,7 +5,7 @@ import * as path from 'path';
 import { Logger } from 'pino';
 import fs = require('fs');
 import { fileExists } from '@waha/utils/files';
-import { deleteAsync } from 'del';
+import { rimraf } from 'rimraf';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const writeFileAtomic = require('write-file-atomic');
@@ -59,11 +59,10 @@ export class MediaLocalStorage implements IMediaStorage {
     }
 
     if (fs.existsSync(this.filesFolder)) {
-      deleteAsync([`${this.filesFolder}/*`], { force: true }).then((paths) => {
-        if (paths.length === 0) {
-          return;
-        }
-        this.log.info('Deleted files and directories:\n', paths.join('\n'));
+      // Use rimraf to delete all contents in the folder
+      const pattern = `${this.filesFolder}/*`;
+      rimraf(pattern, { glob: true }).then(() => {
+        this.log.info(`Purged files in: ${this.filesFolder}`);
       });
     } else {
       fs.mkdirSync(this.filesFolder);

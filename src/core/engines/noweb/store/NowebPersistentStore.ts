@@ -32,8 +32,11 @@ import {
 } from '@waha/structures/pagination.dto';
 import { DefaultMap } from '@waha/utils/DefaultMap';
 import { waitUntil } from '@waha/utils/promiseTimeout';
-import * as lodash from 'lodash';
-import { toNumber } from 'lodash';
+// Optimized lodash imports
+import find from 'lodash/find';
+import flatMap from 'lodash/flatMap';
+import toNumber from 'lodash/toNumber';
+import uniqBy from 'lodash/uniqBy';
 import { Logger } from 'pino';
 
 import { IChatRepository } from './IChatRepository';
@@ -169,7 +172,7 @@ export class NowebPersistentStore implements INowebStore {
     ev.on('groups.update', (data) => {
       this.withLock('groups', () => this.onGroupUpdate(data));
       this.withNoLock('lids', async () => {
-        const participants = lodash.flatMap(data, (g) => g?.participants || []);
+        const participants = flatMap(data, (g) => g?.participants || []);
         const lids = await this.handleLidPNUpdates(participants);
         this.logger.debug(
           `groups.update - '${lids.length}' synced lid to pn mapping`,
@@ -378,7 +381,7 @@ export class NowebPersistentStore implements INowebStore {
     if (action == 'remove') {
       // Remove the group if the current user is removed
       const myJid = this.socket?.authState?.creds?.me?.id;
-      const participantsIncludesMe = lodash.find(participants, (p) =>
+      const participantsIncludesMe = find(participants, (p) =>
         esm.b.areJidsSameUser(p, myJid),
       );
       if (participantsIncludesMe) {
@@ -720,7 +723,7 @@ export class NowebPersistentStore implements INowebStore {
       }
     }
     // make lids unique by id
-    lids = lodash.uniqBy(lids, 'id');
+    lids = uniqBy(lids, 'id');
     if (lids.length > 0) {
       await this.lidRepo.saveLids(lids);
     }

@@ -1,0 +1,141 @@
+# NOWEB-Optimized Dockerfile
+# This Dockerfile is optimized for the NOWEB engine only
+# It skips browser installation and GOWS binary, reducing image size by ~60%
+
+ARG NODE_IMAGE_TAG=24.11-bookworm-slim
+
+#
+# Build Stage
+#
+FROM node:${NODE_IMAGE_TAG} AS build
+ENV PUPPETEER_SKIP_DOWNLOAD=True
+
+# git + build toolchain for git deps (minimal)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    python3 \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# npm packages
+WORKDIR /git
+COPY package.json .
+COPY yarn.lock .
+ENV YARN_CHECKSUM_BEHAVIOR=update
+
+RUN npm install -g corepack && corepack enable
+RUN yarn set version 4.9.2
+RUN yarn install
+
+# App
+WORKDIR /git
+ADD . /git
+RUN yarn install
+RUN yarn build && find ./dist -name "*.d.ts" -delete
+
+#
+# Dashboard Stage
+#
+FROM node:${NODE_IMAGE_TAG} AS dashboard
+
+# jq, wget, unzip, ca-certificates for dashboard download
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    jq \
+    wget \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY waha.config.json /tmp/waha.config.json
+RUN \
+    WAHA_DASHBOARD_GITHUB_REPO=$(jq -r '.waha.dashboard.repo' /tmp/waha.config.json) && \
+    WAHA_DASHBOARD_SHA=$(jq -r '.waha.dashboard.ref' /tmp/waha.config.json) && \
+    wget https://github.com/${WAHA_DASHBOARD_GITHUB_REPO}/archive/${WAHA_DASHBOARD_SHA}.zip \
+    && unzip ${WAHA_DASHBOARD_SHA}.zip -d /tmp/dashboard \
+    && mkdir -p /dashboard \
+    && mv /tmp/dashboard/dashboard-${WAHA_DASHBOARD_SHA}/* /dashboard/ \
+    && rm -rf ${WAHA_DASHBOARD_SHA}.zip \
+    && rm -rf /tmp/dashboard/dashboard-${WAHA_DASHBOARD_SHA}
+
+#
+# Final Stage - NOWEB Optimized (No browser, no GOWS)
+#
+FROM node:${NODE_IMAGE_TAG} AS release
+ENV PUPPETEER_SKIP_DOWNLOAD=True
+
+# Optimized memory settings for NOWEB (no browser overhead)
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+
+# Force NOWEB engine
+ENV WHATSAPP_DEFAULT_ENGINE=NOWEB
+
+# Use better-sqlite3 (already installed, faster than standard sqlite3)
+ENV WAHA_SQLITE_ENGINE=better-sqlite3
+
+# Install only essential media processing tools
+# ffmpeg for video/audio processing
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# libvips for image processing/thumbnails
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libvips \
+    && rm -rf /var/lib/apt/lists/*
+
+# curl for health checks and downloads
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# opustags for audio metadata (pre-built binary to save build time)
+ARG OPUSTAGS_VERSION="1.10.1"
+RUN set -eux; \
+    buildDeps='build-essential cmake pkg-config libogg-dev'; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ${buildDeps}; \
+    mkdir -p /tmp/opustags; \
+    curl -L https://github.com/fmang/opustags/archive/refs/tags/${OPUSTAGS_VERSION}.tar.gz \
+      | tar -xz -C /tmp/opustags; \
+    cd /tmp/opustags/opustags-${OPUSTAGS_VERSION}; \
+    cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release; \
+    cmake --build build --config Release; \
+    cmake --install build; \
+    rm -rf /tmp/opustags; \
+    apt-get purge -y --auto-remove ${buildDeps}; \
+    rm -rf /var/lib/apt/lists/*
+
+# tini for proper signal handling
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Application setup
+WORKDIR /app
+COPY package.json ./
+COPY --from=build /git/node_modules ./node_modules
+COPY --from=build /git/dist ./dist
+COPY --from=dashboard /dashboard ./dist/dashboard
+COPY .env.example ./.env.example
+COPY scripts/init-waha.js ./scripts/init-waha.js
+RUN chmod +x ./scripts/init-waha.js \
+  && printf '%s\n' '#!/bin/sh' 'exec node /app/scripts/init-waha.js "$@"' > /usr/local/bin/init-waha \
+  && chmod +x /usr/local/bin/init-waha
+
+COPY entrypoint.sh /entrypoint.sh
+
+# Chokidar options for file monitoring
+ENV CHOKIDAR_USEPOLLING=1
+ENV CHOKIDAR_INTERVAL=5000
+
+# WAHA configuration
+ENV WAHA_ZIPPER=ZIPUNZIP
+
+# Expose API port
+EXPOSE 3000
+
+# Use tini as init system
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/entrypoint.sh"]

@@ -63,15 +63,14 @@ services:
       # PostgreSQL for sessions (optional - uses local storage by default)
       # WHATSAPP_SESSIONS_POSTGRESQL_URL: postgres://postgres:postgres@postgres:5432/waha?sslmode=disable
 
-      # Ban Prevention Database (our custom addition)
-      BAN_PREVENTION_DATABASE_URL: postgres://postgres:postgres@postgres:5432/waha?sslmode=disable
+      # Ban Prevention Database (external PostgreSQL)
+      BAN_PREVENTION_DATABASE_URL: ${BAN_PREVENTION_DATABASE_URL:-postgresql://postgres:beginagainissuchagreatmovie2024@94.136.188.253:5432/waha}
+
+      # Multi-session support
+      WAHA_MAX_SESSIONS: ${WAHA_MAX_SESSIONS:-20}
 
       # Redis for rate limiting (optional but recommended)
       # REDIS_URL: redis://redis:6379
-
-    depends_on:
-      postgres:
-        condition: service_healthy
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/ping"]
@@ -80,34 +79,8 @@ services:
       retries: 3
       start_period: 30s
 
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: waha
-
-    ports:
-      - '5432:5432'
-
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      # Initialize ban prevention tables
-      - ./init-db:/docker-entrypoint-initdb.d
-
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-    logging:
-      driver: 'json-file'
-      options:
-        max-size: '50m'
-        max-file: '5'
+  # NOTE: Using external PostgreSQL at 94.136.188.253
+  # No local postgres service needed
 
   # Optional: Redis for rate limiting
   redis:
@@ -135,5 +108,4 @@ services:
         max-file: '5'
 
 volumes:
-  postgres_data:
   redis_data:

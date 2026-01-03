@@ -1,5 +1,33 @@
 #!/bin/sh
 
+#
+# Set engine-specific NODE_OPTIONS for memory optimization
+# Only set if not already defined by user
+#
+if [ -z "$NODE_OPTIONS" ]; then
+  case "$WHATSAPP_DEFAULT_ENGINE" in
+    GOWS)
+      # GOWS: Go handles most processing, minimal Node.js heap needed
+      export NODE_OPTIONS="--max-old-space-size=2048"
+      echo "Engine: GOWS - Setting NODE_OPTIONS to 2GB heap"
+      ;;
+    NOWEB)
+      # NOWEB: Pure Node.js with Baileys, moderate heap
+      export NODE_OPTIONS="--max-old-space-size=4096"
+      echo "Engine: NOWEB - Setting NODE_OPTIONS to 4GB heap"
+      ;;
+    WEBJS|"")
+      # WEBJS: Puppeteer/Chromium needs more memory
+      export NODE_OPTIONS="--max-old-space-size=8192"
+      echo "Engine: WEBJS - Setting NODE_OPTIONS to 8GB heap"
+      ;;
+    *)
+      # Unknown engine, use moderate default
+      export NODE_OPTIONS="--max-old-space-size=4096"
+      echo "Engine: Unknown ($WHATSAPP_DEFAULT_ENGINE) - Setting NODE_OPTIONS to 4GB heap"
+      ;;
+  esac
+fi
 
 #
 # Calculate UV_THREADPOOL_SIZE based on number of CPUs

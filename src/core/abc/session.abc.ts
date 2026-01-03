@@ -46,7 +46,7 @@ import { SwitchObservable } from '@waha/utils/reactive/SwitchObservable';
 import axios from 'axios';
 import axiosRetry from 'axios-retry';
 import * as fs from 'fs';
-import * as lodash from 'lodash';
+import find from 'lodash/find';
 import * as NodeCache from 'node-cache';
 import { Logger } from 'pino';
 import {
@@ -772,7 +772,7 @@ export abstract class WhatsappSession {
    */
   public async getLabel(labelId: string): Promise<Label | undefined> {
     const labels = await this.getLabels();
-    return lodash.find(labels, { id: labelId });
+    return find(labels, { id: labelId });
   }
 
   public getLabels(): Promise<Label[]> {

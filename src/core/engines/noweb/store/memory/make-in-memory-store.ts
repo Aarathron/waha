@@ -12,7 +12,7 @@ import type {
   WAMessageKey,
 } from '@adiwajshing/baileys/lib/Types';
 import type { Label } from '@adiwajshing/baileys/lib/Types/Label';
-import * as lodash from 'lodash';
+import toNumber from 'lodash/toNumber';
 import type {
   LabelAssociation,
   MessageLabelAssociation,
@@ -279,7 +279,7 @@ export default (config: BaileysInMemoryStoreConfig) => {
               ev.emit('chats.upsert', [
                 {
                   id: jid,
-                  conversationTimestamp: lodash.toNumber(
+                  conversationTimestamp: toNumber(
                     msg.messageTimestamp as any,
                   ),
                   unreadCount: 1,

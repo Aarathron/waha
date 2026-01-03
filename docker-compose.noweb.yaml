@@ -1,0 +1,59 @@
+# NOWEB-Optimized Docker Compose
+# Uses the lightweight NOWEB-only image (no browser dependencies)
+# Build with: docker build -f Dockerfile.noweb -t waha:noweb .
+# Run with: docker-compose -f docker-compose.noweb.yaml up
+
+services:
+  waha:
+    restart: always
+    # Build from NOWEB-optimized Dockerfile
+    build:
+      context: .
+      dockerfile: Dockerfile.noweb
+    # Or use pre-built image if available
+    # image: waha:noweb
+
+    # DNS configuration (optional, for WhatsApp connectivity)
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+    # Optimized logging
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '50m'
+        max-file: '5'
+
+    ports:
+      - '47823:3000/tcp'
+
+    volumes:
+      # Session storage
+      - './sessions:/app/.sessions'
+      # Media files
+      - './media:/app/.media'
+
+    environment:
+      # Force NOWEB engine
+      - WHATSAPP_DEFAULT_ENGINE=NOWEB
+      # Optimized memory for NOWEB (no browser overhead)
+      - NODE_OPTIONS=--max-old-space-size=4096
+      # Disable xvfb (not needed for NOWEB)
+      - WAHA_RUN_XVFB=false
+
+    env_file:
+      - .env
+
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 512M
+
+# No external database volumes needed for basic setup
+# Uncomment if using PostgreSQL for ban prevention or sessions
+# volumes:
+#   pg_data: {}

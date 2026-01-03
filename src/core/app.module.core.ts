@@ -138,7 +138,10 @@ const IMPORTS_MEDIA = [
 ];
 
 // Ban Prevention Module for 21-day warmup and rate limiting
-const IMPORTS_BAN_PREVENTION = [BanPreventionModule];
+// Only load if BAN_PREVENTION_ENABLED is explicitly true to avoid loading PostgreSQL driver
+const IMPORTS_BAN_PREVENTION = parseBool(process.env.BAN_PREVENTION_ENABLED)
+  ? [BanPreventionModule]
+  : [];
 
 const IMPORTS = [...IMPORTS_CORE, ...IMPORTS_MEDIA, ...IMPORTS_BAN_PREVENTION];
 
