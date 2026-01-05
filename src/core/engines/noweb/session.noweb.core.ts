@@ -51,6 +51,7 @@ import {
   ToGroupV2UpdateEvent,
 } from '@waha/core/engines/noweb/groups.noweb';
 import { sendButtonMessage } from '@waha/core/engines/noweb/noweb.buttons';
+import { sendListMessage } from '@waha/core/engines/noweb/noweb.list';
 import {
   NOWEBNewsletterMetadata,
   toNewsletterMetadata,
@@ -1061,8 +1062,18 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     );
   }
 
-  sendList(request: SendListRequest): Promise<any> {
-    throw new AvailableInPlusVersion();
+  @Activity()
+  async sendList(request: SendListRequest): Promise<any> {
+    const chatId = toJID(this.ensureSuffix(request.chatId));
+    return await sendListMessage(
+      this.sock,
+      chatId,
+      request.message.title,
+      request.message.description,
+      request.message.button,
+      request.message.footer,
+      request.message.sections,
+    );
   }
 
   @Activity()
