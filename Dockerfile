@@ -19,12 +19,13 @@ ENV YARN_CHECKSUM_BEHAVIOR=update
 
 RUN npm install -g corepack && corepack enable
 RUN yarn set version 4.9.2
-RUN yarn install
+# Retry yarn install up to 3 times to handle transient network issues with git dependencies
+RUN yarn install || yarn install || yarn install
 
 # App
 WORKDIR /git
 ADD . /git
-RUN yarn install
+RUN yarn install || yarn install || yarn install
 RUN yarn build && find ./dist -name "*.d.ts" -delete
 
 #
