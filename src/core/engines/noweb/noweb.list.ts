@@ -1,6 +1,27 @@
+/**
+ * WARNING: List messages (and button messages) are DEPRECATED by Meta/WhatsApp.
+ *
+ * As of May 2023, Meta actively patches unofficial WhatsApp Web libraries to block
+ * interactive messages (lists, buttons). This feature may not work reliably.
+ *
+ * For reliable interactive messages, use the official WhatsApp Cloud API:
+ * https://business.whatsapp.com/products/business-platform
+ *
+ * See: https://dev.to/purpshell/buttons-and-lists-get-deprecated-by-many-libraries-54h
+ * See: https://github.com/WhiskeySockets/Baileys/issues/56
+ */
 import { Section } from '@waha/structures/chatting.list.dto';
 import esm from '@waha/vendor/esm';
 import { randomId } from './noweb.buttons';
+
+const LIST_DEPRECATION_WARNING = `
+[WAHA WARNING] List messages may not work reliably.
+Meta/WhatsApp deprecated interactive messages (lists, buttons) for unofficial APIs in May 2023.
+For reliable interactive messages, use the official WhatsApp Cloud API.
+See: https://github.com/WhiskeySockets/Baileys/issues/56
+`;
+
+let listWarningShown = false;
 
 function sectionToProto(section: Section) {
   return {
@@ -22,6 +43,12 @@ export async function sendListMessage(
   footerText: string | undefined,
   sections: Section[],
 ) {
+  // Show deprecation warning once per process
+  if (!listWarningShown) {
+    console.warn(LIST_DEPRECATION_WARNING);
+    listWarningShown = true;
+  }
+
   // Modern approach: Use interactiveMessage with list action (like Whapi.cloud)
   const data = {
     viewOnceMessage: {

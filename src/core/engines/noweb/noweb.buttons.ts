@@ -1,5 +1,26 @@
+/**
+ * WARNING: Button messages (and list messages) are DEPRECATED by Meta/WhatsApp.
+ *
+ * As of May 2023, Meta actively patches unofficial WhatsApp Web libraries to block
+ * interactive messages (lists, buttons). This feature may not work reliably.
+ *
+ * For reliable interactive messages, use the official WhatsApp Cloud API:
+ * https://business.whatsapp.com/products/business-platform
+ *
+ * See: https://dev.to/purpshell/buttons-and-lists-get-deprecated-by-many-libraries-54h
+ * See: https://github.com/WhiskeySockets/Baileys/issues/56
+ */
 import { Button, ButtonType } from '@waha/structures/chatting.buttons.dto';
 import esm from '@waha/vendor/esm';
+
+const BUTTON_DEPRECATION_WARNING = `
+[WAHA WARNING] Button messages may not work reliably.
+Meta/WhatsApp deprecated interactive messages (lists, buttons) for unofficial APIs in May 2023.
+For reliable interactive messages, use the official WhatsApp Cloud API.
+See: https://github.com/WhiskeySockets/Baileys/issues/56
+`;
+
+let buttonWarningShown = false;
 
 function toName(type: ButtonType) {
   switch (type) {
@@ -55,6 +76,12 @@ export async function sendButtonMessage(
   body?: string,
   footer?: string,
 ) {
+  // Show deprecation warning once per process
+  if (!buttonWarningShown) {
+    console.warn(BUTTON_DEPRECATION_WARNING);
+    buttonWarningShown = true;
+  }
+
   const data = {
     viewOnceMessage: {
       message: {
