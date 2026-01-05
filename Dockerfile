@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y git python3 build-essential && rm -rf /
 WORKDIR /git
 COPY package.json .
 COPY yarn.lock .
+COPY .yarnrc.yml .
 ENV YARN_CHECKSUM_BEHAVIOR=update
 
 RUN npm install -g corepack && corepack enable
