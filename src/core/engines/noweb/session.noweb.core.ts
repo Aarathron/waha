@@ -261,6 +261,12 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
   private statusTracker = new StatusTracker();
 
+  /**
+   * Observable for message status updates (ACK changes).
+   * Used by iOS fallback mechanism to detect undelivered list messages.
+   */
+  private messageUpdates$: Observable<WAMessageUpdate>;
+
   public constructor(config) {
     super(config);
     this.shouldRestart = true;
@@ -1059,6 +1065,8 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       headerImage,
       request.body,
       request.footer,
+      request.wrapper,
+      request.nodeApproach,
     );
   }
 
@@ -1073,6 +1081,10 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       request.message.button,
       request.message.footer,
       request.message.sections,
+      request.nodeApproach,
+      request.iosFallback, // iOS fallback configuration
+      this.messageUpdates$, // Observable for ACK monitoring
+      this.logger, // Logger for debugging
     );
   }
 
@@ -2098,7 +2110,8 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     //
     // Message Ack
     //
-    const messageUpdates$: Observable<WAMessageUpdate> = fromEvent(
+    // Store the observable for use by iOS fallback mechanism
+    this.messageUpdates$ = fromEvent(
       this.sock.ev,
       'messages.update',
     ).pipe(
@@ -2107,6 +2120,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       filter((update) => this.jids.include(update.key.remoteJid)),
       share(),
     );
+    const messageUpdates$ = this.messageUpdates$;
     const messageAckDirect$ = messageUpdates$.pipe(
       filter(isMine), // ack comes only for MY messages
       filter(isAckUpdateMessageEvent),
