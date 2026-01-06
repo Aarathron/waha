@@ -44,15 +44,6 @@ import {
 // Re-export for use in other modules
 export { randomId, setInteractiveWrapper, InteractiveWrapperType, getCurrentWrapper };
 
-const BUTTON_DEPRECATION_WARNING = `
-[WAHA WARNING] Button messages may not work reliably.
-Meta/WhatsApp deprecated interactive messages (lists, buttons) for unofficial APIs in May 2023.
-For reliable interactive messages, use the official WhatsApp Cloud API.
-See: https://github.com/WhiskeySockets/Baileys/issues/56
-`;
-
-let buttonWarningShown = false;
-
 /**
  * Convert ButtonType enum to WhatsApp native flow button name.
  *
@@ -180,12 +171,6 @@ export async function sendButtonMessage(
   wrapper?: string,
   nodeApproach?: number,
 ): Promise<any> {
-  // Show deprecation warning once per process
-  if (!buttonWarningShown) {
-    console.warn(BUTTON_DEPRECATION_WARNING);
-    buttonWarningShown = true;
-  }
-
   const interactiveContent: any = {
     nativeFlowMessage: {
       buttons: buttons.map(buttonToJson),

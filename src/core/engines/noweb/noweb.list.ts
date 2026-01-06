@@ -58,15 +58,6 @@ import {
   monitorAndFallback,
 } from './noweb.list.fallback';
 
-const LIST_DEPRECATION_WARNING = `
-[WAHA WARNING] List messages may not work reliably.
-Meta/WhatsApp deprecated interactive messages (lists, buttons) for unofficial APIs in May 2023.
-For reliable interactive messages, use the official WhatsApp Cloud API.
-See: https://github.com/WhiskeySockets/Baileys/issues/56
-`;
-
-let listWarningShown = false;
-
 // BinaryNode type for additionalNodes injection
 interface BinaryNode {
   tag: string;
@@ -98,8 +89,19 @@ function sectionToListMessage(section: Section) {
 }
 
 /**
- * Send list message using the native listMessage protobuf type
- * This is an alternative to using interactiveMessage.nativeFlowMessage
+ * Send list message using the native listMessage protobuf type.
+ *
+ * This is an alternative to using interactiveMessage.nativeFlowMessage.
+ * Used when nodeApproach === 12.
+ *
+ * ## Approach 12: Native listMessage
+ *
+ * Instead of wrapping the list in nativeFlowMessage, this approach uses
+ * the native listMessage protobuf structure directly. This may work
+ * better on some WhatsApp versions but is less tested than the default
+ * interactiveMessage approach.
+ *
+ * @internal Used by sendListMessage when nodeApproach === 12
  */
 async function sendNativeListMessage(
   sock: any,
@@ -110,8 +112,6 @@ async function sendNativeListMessage(
   footerText: string | undefined,
   sections: Section[],
 ) {
-  console.log('[LIST] Sending native listMessage');
-
   const isGroup = chatId.endsWith('@g.us');
 
   // Build the listMessage protobuf structure
@@ -151,14 +151,11 @@ async function sendNativeListMessage(
     additionalNodes.push({ tag: 'bot', attrs: { biz_bot: '1' }, content: undefined });
   }
 
-  console.log('[LIST] Injecting binary nodes:', additionalNodes.map(n => n.tag).join(', '));
-
   await sock.relayMessage(chatId, fullMessage.message, {
     messageId: fullMessage.key.id,
     additionalNodes,
   });
 
-  console.log('[LIST] Message sent with ID:', fullMessage.key.id);
   return fullMessage;
 }
 
@@ -184,7 +181,10 @@ export interface ListMessageResult {
  * @param buttonText - Text on the button that opens the list picker
  * @param footerText - Optional footer text
  * @param sections - Array of list sections containing rows
- * @param nodeApproach - Binary node structure approach (default: 4)
+ * @param nodeApproach - Binary node structure approach (default: 4).
+ *   - 0-11: Different binary node structures for interactiveMessage
+ *   - 12: Uses native listMessage protobuf (experimental alternative)
+ *   - Recommended: 4 (BaileysHelper style)
  * @param fallbackConfig - iOS fallback configuration
  * @param messageUpdates$ - RxJS observable for ACK monitoring (required for fallback)
  * @param logger - Optional logger for debugging
@@ -219,12 +219,6 @@ export async function sendListMessage(
   messageUpdates$?: Observable<any>,
   logger?: any,
 ): Promise<ListMessageResult> {
-  // Show deprecation warning once per process
-  if (!listWarningShown) {
-    console.warn(LIST_DEPRECATION_WARNING);
-    listWarningShown = true;
-  }
-
   let listMessage: any;
 
   // Approach 12: Use native listMessage protobuf type
@@ -281,11 +275,10 @@ export async function sendListMessage(
   // If fallback is enabled, check prerequisites
   if (config.enabled) {
     if (!messageUpdates$) {
-      // Observable not available - warn and skip fallback
-      console.warn('[LIST] iOS fallback enabled but messageUpdates$ observable not available. Fallback will not work.');
+      // Observable not available - log warning and skip fallback
       logger?.warn('iOS fallback enabled but messageUpdates$ observable not available');
     } else {
-      console.log(`[LIST] iOS fallback enabled, monitoring ACK for ${config.timeoutMs}ms`);
+      logger?.info({ timeoutMs: config.timeoutMs }, 'iOS fallback enabled, monitoring ACK');
 
       // Create fallback function that sends buttons
       const sendFallbackButtons = async () => {
@@ -293,12 +286,14 @@ export async function sendListMessage(
 
         // Guard: Don't send empty buttons array
         if (conversion.buttons.length === 0) {
-          console.warn('[LIST] Cannot send fallback - no buttons generated from list rows');
           logger?.warn('Cannot send fallback - list has no rows to convert to buttons');
           throw new Error('No buttons to send - list has no rows');
         }
 
-        console.log(`[LIST] Sending fallback buttons (${conversion.buttons.length} buttons, truncated: ${conversion.truncated})`);
+        logger?.info(
+          { buttonCount: conversion.buttons.length, truncated: conversion.truncated },
+          'Sending fallback buttons',
+        );
 
         return await sendButtonMessage(
           sock,
@@ -333,7 +328,7 @@ export async function sendListMessage(
     iosFallback: {
       originalMessageId: listMessage.key.id,
       fallbackTriggered: false,
-      reason: 'delivered', // No monitoring was done, assuming delivered
+      reason: 'no_monitoring', // Fallback disabled or prerequisites not met
     },
   };
 }

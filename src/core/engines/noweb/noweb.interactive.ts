@@ -110,16 +110,13 @@ function parseWrapperType(value: string): InteractiveWrapperType {
     case 'direct':
       return InteractiveWrapperType.DIRECT;
     default:
-      console.warn(
-        `[INTERACTIVE] Unknown wrapper type: ${value}, defaulting to viewOnceMessageV2`,
-      );
+      // Unknown wrapper type - fall back to recommended wrapper
       return InteractiveWrapperType.VIEW_ONCE_V2;
   }
 }
 
 // Initialize wrapper from environment variable
 let currentWrapper: InteractiveWrapperType = parseWrapperType(WAHA_INTERACTIVE_WRAPPER);
-console.log(`[INTERACTIVE] Wrapper initialized: ${currentWrapper}`);
 
 /**
  * Set the interactive message wrapper type at runtime.
@@ -130,7 +127,6 @@ console.log(`[INTERACTIVE] Wrapper initialized: ${currentWrapper}`);
  * setInteractiveWrapper(InteractiveWrapperType.VIEW_ONCE_V2);
  */
 export function setInteractiveWrapper(wrapper: InteractiveWrapperType): void {
-  console.log(`[INTERACTIVE] Switching wrapper to: ${wrapper}`);
   currentWrapper = wrapper;
 }
 
@@ -553,7 +549,6 @@ export async function sendInteractiveMessage(
   // Default to approach 4 (BaileysHelper style) - proven to work
   const approach = nodeApproach ?? 4;
   const isGroup = chatId.endsWith('@g.us');
-  console.log(`[INTERACTIVE] Sending message: wrapper=${wrapper}, approach=${approach}, isGroup=${isGroup}`);
 
   const data = wrapInteractiveMessage(interactiveContent, wrapper);
 
@@ -565,20 +560,12 @@ export async function sendInteractiveMessage(
   // Binary node injection - the key to making interactive messages work
   // Without these nodes, WhatsApp servers reject/ignore the interactive content
   const additionalNodes = buildAdditionalNodes(chatId, approach);
-  const nodeDesc = additionalNodes.map(n => {
-    if (n.content && Array.isArray(n.content)) {
-      return `${n.tag}[${(n.content as BinaryNode[]).map(c => c.tag).join(',')}]`;
-    }
-    return n.tag;
-  }).join(', ');
-  console.log(`[INTERACTIVE] Binary nodes (approach ${approach}): ${nodeDesc}`);
 
   await sock.relayMessage(chatId, fullMessage.message, {
     messageId: fullMessage.key.id,
     additionalNodes,
   });
 
-  console.log(`[INTERACTIVE] Sent message ID: ${fullMessage.key.id}`);
   return fullMessage;
 }
 
@@ -600,7 +587,6 @@ export async function testAllWrappers(
 
   for (const wrapper of wrappers) {
     try {
-      console.log(`[INTERACTIVE] Testing wrapper: ${wrapper}`);
       const result = await sendInteractiveMessage(
         sock,
         chatId,

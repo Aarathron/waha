@@ -20,7 +20,8 @@
  * @see noweb.buttons.ts - Button message implementation
  */
 
-import { Observable, first, timeout, catchError, of, filter } from 'rxjs';
+import { Observable, first, timeout, catchError, of, filter, throwError } from 'rxjs';
+import { TimeoutError } from 'rxjs';
 
 import { Button, ButtonType } from '@waha/structures/chatting.buttons.dto';
 import { Section, Row } from '@waha/structures/chatting.list.dto';
@@ -69,9 +70,18 @@ export interface ListFallbackResult {
   fallbackTriggered: boolean;
 
   /**
-   * Reason for fallback (or delivery confirmation)
+   * Reason for result:
+   * - 'timeout': Message stayed PENDING, fallback was triggered and succeeded
+   * - 'delivered': Message was acknowledged before timeout, no fallback needed
+   * - 'fallback_failed': Timeout occurred but fallback message failed to send
+   * - 'no_monitoring': Fallback was disabled or prerequisites not met
    */
-  reason: 'timeout' | 'delivered';
+  reason: 'timeout' | 'delivered' | 'fallback_failed' | 'no_monitoring';
+
+  /**
+   * Error message if fallback failed
+   */
+  error?: string;
 }
 
 /**
@@ -227,9 +237,13 @@ export async function monitorAndFallback(
       }),
       first(),
       timeout(timeoutMs),
-      catchError(() => {
-        // Timeout occurred - message stayed PENDING
-        return of({ timedOut: true });
+      catchError((err) => {
+        // Only handle TimeoutError - re-throw other errors
+        if (err instanceof TimeoutError) {
+          return of({ timedOut: true });
+        }
+        // Re-throw unexpected errors
+        return throwError(() => err);
       }),
     );
 
@@ -250,15 +264,17 @@ export async function monitorAndFallback(
             reason: 'timeout',
           });
         } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
           logger?.error(
-            { error, messageId },
+            { error: errorMessage, messageId },
             'Failed to send fallback button message',
           );
-          // Still report as triggered even if fallback failed
+          // Accurately report that fallback was attempted but failed
           resolve({
             originalMessageId: messageId,
-            fallbackTriggered: true,
-            reason: 'timeout',
+            fallbackTriggered: false,
+            reason: 'fallback_failed',
+            error: errorMessage,
           });
         }
       } else {
