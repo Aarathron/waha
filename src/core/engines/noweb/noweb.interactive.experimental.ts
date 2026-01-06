@@ -17,6 +17,13 @@
 import { WAHA_INTERACTIVE_WRAPPER } from '@waha/core/env';
 import esm from '@waha/vendor/esm';
 
+// BinaryNode type for additionalNodes injection
+interface BinaryNode {
+  tag: string;
+  attrs: Record<string, string>;
+  content?: BinaryNode[] | string | Uint8Array;
+}
+
 export enum InteractiveWrapperType {
   VIEW_ONCE = 'viewOnceMessage',
   VIEW_ONCE_V2 = 'viewOnceMessageV2',
@@ -150,6 +157,36 @@ function wrapInteractiveMessage(
   }
 }
 
+/**
+ * Build binary nodes required for interactive messages.
+ *
+ * WhatsApp expects specific binary node wrappers (biz, bot, native_flow, interactive)
+ * for interactive messages. Without these, messages stay PENDING and never render.
+ *
+ * - Private chats need: 'biz' + 'bot' nodes
+ * - Group chats need: 'biz' node only
+ *
+ * @see https://libraries.io/npm/baileys_helpers - Documents this approach
+ */
+function buildAdditionalNodes(chatId: string): BinaryNode[] {
+  const isGroup = chatId.endsWith('@g.us');
+
+  const nodes: BinaryNode[] = [
+    { tag: 'biz', attrs: {}, content: undefined },
+  ];
+
+  // Private chats need the bot node for interactive flows
+  if (!isGroup) {
+    nodes.push({
+      tag: 'bot',
+      attrs: { biz_bot: '1' },
+      content: undefined,
+    });
+  }
+
+  return nodes;
+}
+
 export async function sendInteractiveMessageExperimental(
   sock: any,
   chatId: string,
@@ -157,7 +194,8 @@ export async function sendInteractiveMessageExperimental(
   wrapperType?: InteractiveWrapperType,
 ) {
   const wrapper = wrapperType || currentWrapper;
-  console.log(`[EXPERIMENTAL] Sending interactive message with wrapper: ${wrapper}`);
+  const isGroup = chatId.endsWith('@g.us');
+  console.log(`[EXPERIMENTAL] Sending interactive message with wrapper: ${wrapper}, isGroup: ${isGroup}`);
 
   const data = wrapInteractiveMessage(interactiveContent, wrapper);
 
@@ -166,8 +204,14 @@ export async function sendInteractiveMessageExperimental(
     userJid: sock?.user?.id,
   });
 
+  // Binary node injection - the key to making interactive messages work
+  // Without these nodes, WhatsApp servers reject/ignore the interactive content
+  const additionalNodes = buildAdditionalNodes(chatId);
+  console.log(`[EXPERIMENTAL] Injecting binary nodes: ${additionalNodes.map(n => n.tag).join(', ')}`);
+
   await sock.relayMessage(chatId, fullMessage.message, {
     messageId: fullMessage.key.id,
+    additionalNodes,
   });
 
   console.log(`[EXPERIMENTAL] Message sent with ID: ${fullMessage.key.id}`);
