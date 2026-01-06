@@ -30,3 +30,11 @@ export const WAHA_CLIENT_DEVICE_NAME =
   process.env.WAHA_CLIENT_DEVICE_NAME || null;
 export const WAHA_CLIENT_BROWSER_NAME =
   process.env.WAHA_CLIENT_BROWSER_NAME || null;
+
+//
+// Interactive messages (buttons/lists) wrapper type
+// Options: viewOnceMessage, viewOnceMessageV2, viewOnceMessageV2Extension, botInvokeMessage, direct
+// Default: viewOnceMessageV2 (experimental - trying to find what works)
+//
+export const WAHA_INTERACTIVE_WRAPPER =
+  process.env.WAHA_INTERACTIVE_WRAPPER || 'viewOnceMessageV2';

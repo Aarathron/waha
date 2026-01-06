@@ -11,8 +11,8 @@
  * See: https://github.com/WhiskeySockets/Baileys/issues/56
  */
 import { Section } from '@waha/structures/chatting.list.dto';
-import esm from '@waha/vendor/esm';
-import { randomId } from './noweb.buttons';
+
+import { randomId, sendInteractiveMessageExperimental } from './noweb.interactive.experimental';
 
 const LIST_DEPRECATION_WARNING = `
 [WAHA WARNING] List messages may not work reliably.
@@ -49,46 +49,41 @@ export async function sendListMessage(
     listWarningShown = true;
   }
 
-  // Modern approach: Use interactiveMessage with list action (like Whapi.cloud)
-  const data = {
-    viewOnceMessage: {
-      message: {
-        messageContextInfo: {
-          deviceListMetadata: {},
-          deviceListMetadataVersion: 2,
+  const interactiveContent: any = {
+    nativeFlowMessage: {
+      buttons: [
+        {
+          name: 'single_select',
+          buttonParamsJson: JSON.stringify({
+            title: buttonText,
+            sections: sections.map(sectionToProto),
+          }),
         },
-        interactiveMessage: {
-          header: title
-            ? { title: title, hasMediaAttachment: false }
-            : undefined,
-          body: description ? { text: description } : undefined,
-          footer: footerText ? { text: footerText } : undefined,
-          nativeFlowMessage: {
-            buttons: [
-              {
-                name: 'single_select',
-                buttonParamsJson: JSON.stringify({
-                  title: buttonText,
-                  sections: sections.map(sectionToProto),
-                }),
-              },
-            ],
-            messageParamsJson: JSON.stringify({
-              from: 'api',
-              templateId: randomId(),
-            }),
-          },
-        },
-      },
+      ],
+      messageParamsJson: JSON.stringify({
+        from: 'api',
+        templateId: randomId(),
+      }),
+      messageVersion: 1,
     },
   };
 
-  const msg = esm.b.proto.Message.create(data);
-  const fullMessage = esm.b.generateWAMessageFromContent(chatId, msg, {
-    userJid: sock?.user?.id,
-  });
-  await sock.relayMessage(chatId, fullMessage.message, {
-    messageId: fullMessage.key.id,
-  });
-  return fullMessage;
+  if (title) {
+    interactiveContent.header = {
+      title: title,
+      hasMediaAttachment: false,
+    };
+  }
+  if (description) {
+    interactiveContent.body = {
+      text: description,
+    };
+  }
+  if (footerText) {
+    interactiveContent.footer = {
+      text: footerText,
+    };
+  }
+
+  return await sendInteractiveMessageExperimental(sock, chatId, interactiveContent);
 }

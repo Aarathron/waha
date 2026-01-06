@@ -11,7 +11,17 @@
  * See: https://github.com/WhiskeySockets/Baileys/issues/56
  */
 import { Button, ButtonType } from '@waha/structures/chatting.buttons.dto';
-import esm from '@waha/vendor/esm';
+
+import {
+  getCurrentWrapper,
+  InteractiveWrapperType,
+  randomId,
+  sendInteractiveMessageExperimental,
+  setInteractiveWrapper,
+} from './noweb.interactive.experimental';
+
+// Re-export for use in other modules
+export { randomId, setInteractiveWrapper, InteractiveWrapperType, getCurrentWrapper };
 
 const BUTTON_DEPRECATION_WARNING = `
 [WAHA WARNING] Button messages may not work reliably.
@@ -33,11 +43,6 @@ function toName(type: ButtonType) {
     case ButtonType.COPY:
       return 'cta_copy';
   }
-}
-
-export function randomId() {
-  // generate 16 random digits
-  return Math.random().toString().slice(2, 18);
 }
 
 export function buttonToJson(button: Button) {
@@ -82,53 +87,34 @@ export async function sendButtonMessage(
     buttonWarningShown = true;
   }
 
-  const data = {
-    viewOnceMessage: {
-      message: {
-        messageContextInfo: {
-          deviceListMetadata: {},
-          deviceListMetadataVersion: 2,
-        },
-        interactiveMessage: {
-          body: undefined,
-          header: undefined,
-          footer: undefined,
-          nativeFlowMessage: {
-            buttons: buttons.map(buttonToJson),
-            messageParamsJson: JSON.stringify({
-              from: 'api',
-              templateId: randomId(),
-            }),
-          },
-        },
-      },
+  const interactiveContent: any = {
+    nativeFlowMessage: {
+      buttons: buttons.map(buttonToJson),
+      messageParamsJson: JSON.stringify({
+        from: 'api',
+        templateId: randomId(),
+      }),
+      messageVersion: 1,
     },
   };
 
   if (header || headerImage) {
-    data.viewOnceMessage.message.interactiveMessage.header = {
+    interactiveContent.header = {
       title: header,
       hasMediaAttachment: !!headerImage,
       imageMessage: headerImage,
     };
   }
   if (body) {
-    data.viewOnceMessage.message.interactiveMessage.body = {
+    interactiveContent.body = {
       text: body,
     };
   }
   if (footer) {
-    data.viewOnceMessage.message.interactiveMessage.footer = {
+    interactiveContent.footer = {
       text: footer,
     };
   }
 
-  const msg = esm.b.proto.Message.create(data);
-  const fullMessage = esm.b.generateWAMessageFromContent(chatId, msg, {
-    userJid: sock?.user?.id,
-  });
-  await sock.relayMessage(chatId, fullMessage.message, {
-    messageId: fullMessage.key.id,
-  });
-  return fullMessage;
+  return await sendInteractiveMessageExperimental(sock, chatId, interactiveContent);
 }
