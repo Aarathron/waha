@@ -196,6 +196,8 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
     }
     this.stopEvents();
     await this.engineBootstrap.shutdown();
+    // Close session config repository connection pool
+    await this.sessionConfigRepository.close();
   }
 
   async onApplicationBootstrap() {
@@ -226,11 +228,13 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
   async upsert(name: string, config?: SessionConfig): Promise<void> {
     this.checkSessionLimit(name);
     const sessionConfig = config || null;
-    this.sessionConfigs.set(name, sessionConfig);
 
-    // Persist to repository
+    // Persist to repository FIRST - if this fails, don't modify in-memory state
     await this.sessionConfigRepository.saveConfig(name, sessionConfig || {});
     this.log.debug({ session: name }, 'Session config saved to repository');
+
+    // Only update in-memory state after successful persistence
+    this.sessionConfigs.set(name, sessionConfig);
 
     // If session doesn't exist yet, add to stopped sessions
     if (!this.sessions.has(name)) {
@@ -389,14 +393,15 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
 
   async delete(name: string): Promise<void> {
     await this.appsService.removeBySession(this, name);
-    // Remove from all tracking structures
+
+    // Remove from repository FIRST - if this fails, don't modify in-memory state
+    await this.sessionConfigRepository.deleteConfig(name);
+    this.log.debug({ session: name }, 'Session config deleted from repository');
+
+    // Only update in-memory state after successful repository deletion
     this.sessions.delete(name);
     this.stoppedSessions.delete(name);
     this.sessionConfigs.delete(name);
-
-    // Remove from repository
-    await this.sessionConfigRepository.deleteConfig(name);
-    this.log.debug({ session: name }, 'Session config deleted from repository');
 
     this.updateSession(name);
   }
@@ -565,28 +570,25 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
   /**
    * Load all session configs from the repository on startup
    * This restores sessions that were created before the server restarted
+   * Errors are propagated to prevent silent startup with missing sessions
    */
   private async loadSessionsFromRepository(): Promise<void> {
-    try {
-      const sessionNames = await this.sessionConfigRepository.getAllConfigs();
-      this.log.info(
-        { count: sessionNames.length },
-        'Loading session configs from repository',
-      );
+    const sessionNames = await this.sessionConfigRepository.getAllConfigs();
+    this.log.info(
+      { count: sessionNames.length },
+      'Loading session configs from repository',
+    );
 
-      for (const sessionName of sessionNames) {
-        const config = await this.sessionConfigRepository.getConfig(sessionName);
-        this.sessionConfigs.set(sessionName, config);
-        this.stoppedSessions.add(sessionName);
-        this.log.debug({ session: sessionName }, 'Loaded session config');
-      }
-
-      this.log.info(
-        { count: sessionNames.length },
-        'Session configs loaded from repository',
-      );
-    } catch (error) {
-      this.log.error({ error }, 'Failed to load session configs from repository');
+    for (const sessionName of sessionNames) {
+      const config = await this.sessionConfigRepository.getConfig(sessionName);
+      this.sessionConfigs.set(sessionName, config);
+      this.stoppedSessions.add(sessionName);
+      this.log.debug({ session: sessionName }, 'Loaded session config');
     }
+
+    this.log.info(
+      { count: sessionNames.length },
+      'Session configs loaded from repository',
+    );
   }
 }

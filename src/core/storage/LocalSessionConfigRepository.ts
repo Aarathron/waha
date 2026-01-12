@@ -80,4 +80,9 @@ export class LocalSessionConfigRepository extends ISessionConfigRepository {
   async init() {
     return;
   }
+
+  async close(): Promise<void> {
+    // No cleanup needed for file-based storage
+    return;
+  }
 }
