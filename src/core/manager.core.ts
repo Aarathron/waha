@@ -45,8 +45,11 @@ import { EngineConfigService } from './config/EngineConfigService';
 import { DOCS_URL } from './exceptions';
 import { getProxyConfig } from './helpers.proxy';
 import { MediaManager } from './media/MediaManager';
+import { ISessionConfigRepository } from './storage/ISessionConfigRepository';
 import { LocalSessionAuthRepository } from './storage/LocalSessionAuthRepository';
+import { LocalSessionConfigRepository } from './storage/LocalSessionConfigRepository';
 import { LocalStoreCore } from './storage/LocalStoreCore';
+import { PostgresSessionConfigRepository } from './storage/PostgresSessionConfigRepository';
 
 // Cache for lazy-loaded engine classes
 let cachedEngineClass: typeof WhatsappSession | null = null;
@@ -104,6 +107,21 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
 
     this.store = new LocalStoreCore(this.engineName.toLowerCase());
     this.sessionAuthRepository = new LocalSessionAuthRepository(this.store);
+
+    // Initialize session config repository based on configuration
+    const postgresUrl = this.config.getSessionPostgresUrl();
+    if (postgresUrl) {
+      this.log.info('Using PostgreSQL for session config persistence');
+      this.sessionConfigRepository = new PostgresSessionConfigRepository(
+        postgresUrl,
+      );
+    } else {
+      this.log.info('Using local file storage for session config persistence');
+      this.sessionConfigRepository = new LocalSessionConfigRepository(
+        this.store,
+      );
+    }
+
     this.clearStorage().catch((error) => {
       this.log.error({ error }, 'Error while clearing storage');
     });
@@ -207,7 +225,13 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
 
   async upsert(name: string, config?: SessionConfig): Promise<void> {
     this.checkSessionLimit(name);
-    this.sessionConfigs.set(name, config || null);
+    const sessionConfig = config || null;
+    this.sessionConfigs.set(name, sessionConfig);
+
+    // Persist to repository
+    await this.sessionConfigRepository.saveConfig(name, sessionConfig || {});
+    this.log.debug({ session: name }, 'Session config saved to repository');
+
     // If session doesn't exist yet, add to stopped sessions
     if (!this.sessions.has(name)) {
       this.stoppedSessions.add(name);
@@ -369,6 +393,11 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
     this.sessions.delete(name);
     this.stoppedSessions.delete(name);
     this.sessionConfigs.delete(name);
+
+    // Remove from repository
+    await this.sessionConfigRepository.deleteConfig(name);
+    this.log.debug({ session: name }, 'Session config deleted from repository');
+
     this.updateSession(name);
   }
 
@@ -527,5 +556,37 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
     await this.store.init();
     const knex = this.store.getWAHADatabase();
     await this.appsService.migrate(knex);
+
+    // Initialize session config repository and load existing sessions
+    await this.sessionConfigRepository.init();
+    await this.loadSessionsFromRepository();
+  }
+
+  /**
+   * Load all session configs from the repository on startup
+   * This restores sessions that were created before the server restarted
+   */
+  private async loadSessionsFromRepository(): Promise<void> {
+    try {
+      const sessionNames = await this.sessionConfigRepository.getAllConfigs();
+      this.log.info(
+        { count: sessionNames.length },
+        'Loading session configs from repository',
+      );
+
+      for (const sessionName of sessionNames) {
+        const config = await this.sessionConfigRepository.getConfig(sessionName);
+        this.sessionConfigs.set(sessionName, config);
+        this.stoppedSessions.add(sessionName);
+        this.log.debug({ session: sessionName }, 'Loaded session config');
+      }
+
+      this.log.info(
+        { count: sessionNames.length },
+        'Session configs loaded from repository',
+      );
+    } catch (error) {
+      this.log.error({ error }, 'Failed to load session configs from repository');
+    }
   }
 }
