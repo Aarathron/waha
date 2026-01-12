@@ -155,7 +155,12 @@ import {
   WAHAChatPresences,
   WAHAPresenceData,
 } from '@waha/structures/presence.dto';
-import { WAMessage, WAMessageReaction } from '@waha/structures/responses.dto';
+import {
+  InteractiveResponse,
+  InteractiveResponseType,
+  WAMessage,
+  WAMessageReaction,
+} from '@waha/structures/responses.dto';
 import { MeInfo } from '@waha/structures/sessions.dto';
 import {
   BROADCAST_ID,
@@ -2472,6 +2477,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     const id = buildMessageId(message.key);
     const body = extractBody(message.message);
     const replyTo = this.extractReplyTo(message.message);
+    const interactiveResponse = extractInteractiveResponse(message.message);
     const ack = message.ack || StatusToAck(message.status);
     const mediaContent = extractMediaContent(message.message);
     const source = this.getMessageSource(message.key.id);
@@ -2496,6 +2502,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       location: extractWALocation(waproto),
       vCards: extractVCards(waproto),
       replyTo: replyTo,
+      interactiveResponse: interactiveResponse,
       _data: message,
     };
   }
@@ -2941,27 +2948,144 @@ export function extractBody(message): string | null {
     // @ts-ignore - AudioMessage doesn't have caption field
     body = mediaContent?.caption;
   }
-  // Response for buttons
+  // Interactive responses (buttons and list selections)
+  // Uses extractInteractiveResponse() to avoid duplicating extraction logic
   if (!body) {
-    body = content.templateButtonReplyMessage?.selectedDisplayText;
-  }
-  if (!body) {
-    body = content.buttonsResponseMessage?.selectedDisplayText;
+    const interactiveResponse = extractInteractiveResponse(message);
+    if (interactiveResponse) {
+      body = formatInteractiveResponseBody(interactiveResponse);
+    }
   }
 
-  // List message
+  // List message (outgoing list, not a response)
   if (!body) {
     const type = getContentType(content);
     if (type == 'listMessage') {
       const list = content.listMessage;
       const parts = [list.title, list.description, list.footerText];
       body = parts.filter(Boolean).join('\n');
-    } else if (type === 'listResponseMessage') {
-      const response = content.listResponseMessage;
-      const parts = [response.title, response.description];
-      body = parts.filter(Boolean).join('\n');
     }
   }
 
   return body;
+}
+
+/**
+ * Format an InteractiveResponse into a body string with concatenated format.
+ *
+ * Format: "DisplayText [selectedId]" or just "DisplayText" if no ID
+ *
+ * @param response - The interactive response to format
+ * @returns Formatted body string, or null if no content
+ */
+export function formatInteractiveResponseBody(
+  response: InteractiveResponse | null,
+): string | null {
+  if (!response) {
+    return null;
+  }
+
+  const displayText = response.selectedText || '';
+  const selectedId = response.selectedId || '';
+
+  if (selectedId) {
+    // Concatenated format: "DisplayText [selectedId]"
+    // Handle edge case where displayText is empty
+    return displayText ? `${displayText} [${selectedId}]` : `[${selectedId}]`;
+  }
+
+  // No ID, just return display text (or null if empty)
+  return displayText || null;
+}
+
+/**
+ * Extract interactive response data from message content.
+ *
+ * Handles:
+ * - Native flow button responses (interactiveResponseMessage.nativeFlowResponseMessage)
+ * - Legacy button responses (buttonsResponseMessage)
+ * - Template button responses (templateButtonReplyMessage)
+ * - List responses (listResponseMessage)
+ *
+ * @param message - WhatsApp message proto content
+ * @returns InteractiveResponse object or null if not an interactive response
+ */
+export function extractInteractiveResponse(
+  message: any,
+): InteractiveResponse | null {
+  if (!message) {
+    return null;
+  }
+
+  const content = extractMessageContent(message);
+  if (!content) {
+    return null;
+  }
+
+  // Handle native flow response (modern button format)
+  const nativeFlowResponse =
+    content.interactiveResponseMessage?.nativeFlowResponseMessage;
+  if (nativeFlowResponse) {
+    let params: Record<string, any> = {};
+    try {
+      params = JSON.parse(nativeFlowResponse.paramsJson || '{}');
+    } catch (e) {
+      // paramsJson parsing failed - continue with empty params
+    }
+
+    return {
+      type: InteractiveResponseType.NATIVE_FLOW,
+      selectedId: params.id,
+      selectedText:
+        params.display_text || content.interactiveResponseMessage?.body?.text,
+      name: nativeFlowResponse.name,
+      params: params,
+    };
+  }
+
+  // Handle legacy buttons response
+  const buttonsResponse = content.buttonsResponseMessage;
+  if (buttonsResponse) {
+    return {
+      type: InteractiveResponseType.BUTTON,
+      selectedId: buttonsResponse.selectedButtonId,
+      selectedText: buttonsResponse.selectedDisplayText,
+      params: {
+        id: buttonsResponse.selectedButtonId,
+        display_text: buttonsResponse.selectedDisplayText,
+      },
+    };
+  }
+
+  // Handle template button response (older format)
+  const templateButtonResponse = content.templateButtonReplyMessage;
+  if (templateButtonResponse) {
+    return {
+      type: InteractiveResponseType.BUTTON,
+      selectedId: templateButtonResponse.selectedId,
+      selectedText: templateButtonResponse.selectedDisplayText,
+      params: {
+        id: templateButtonResponse.selectedId,
+        display_text: templateButtonResponse.selectedDisplayText,
+      },
+    };
+  }
+
+  // Handle list response
+  const listResponse = content.listResponseMessage;
+  if (listResponse?.singleSelectReply) {
+    return {
+      type: InteractiveResponseType.LIST,
+      selectedId: listResponse.singleSelectReply.selectedRowId,
+      // Note: singleSelectReply only contains selectedRowId, not the row's display text.
+      // The original row title would need to be looked up from the sent list message.
+      selectedText: undefined,
+      name: 'single_select',
+      params: {
+        id: listResponse.singleSelectReply.selectedRowId,
+      },
+    };
+  }
+
+  return null;
 }

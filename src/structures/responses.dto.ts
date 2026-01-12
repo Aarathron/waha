@@ -16,6 +16,57 @@ export class WALocation {
   thumbnail?: string;
 }
 
+/**
+ * Types of interactive responses supported
+ */
+export enum InteractiveResponseType {
+  BUTTON = 'button',
+  NATIVE_FLOW = 'native_flow',
+  LIST = 'list',
+}
+
+/**
+ * Interactive response data when user clicks a button or selects from a list
+ */
+export class InteractiveResponse {
+  @ApiProperty({
+    description: 'Type of interactive response',
+    enum: InteractiveResponseType,
+    example: InteractiveResponseType.NATIVE_FLOW,
+  })
+  type: InteractiveResponseType;
+
+  @ApiProperty({
+    description: 'The ID of the button or list item that was selected',
+    example: 'received:work-item-123',
+    required: false,
+  })
+  selectedId?: string;
+
+  @ApiProperty({
+    description: 'The display text of the selected button or list item',
+    example: 'Received',
+    required: false,
+  })
+  selectedText?: string;
+
+  @ApiProperty({
+    description:
+      'The native flow name (e.g., "quick_reply", "single_select", "cta_url")',
+    example: 'quick_reply',
+    required: false,
+  })
+  name?: string;
+
+  @ApiProperty({
+    description:
+      'Parsed parameters from the response (e.g., nativeFlowResponseMessage.paramsJson)',
+    example: { id: 'received:work-item-123', display_text: 'Received' },
+    required: false,
+  })
+  params?: Record<string, any>;
+}
+
 export enum MessageSource {
   API = 'api',
   APP = 'app',
@@ -118,6 +169,22 @@ export class WAMessage extends WAMessageBase {
   vCards?: string[];
 
   replyTo?: ReplyToMessage;
+
+  @ApiProperty({
+    description: `Interactive response data when user clicks a button or selects from a list.
+
+Contains structured information about:
+- **Native flow button clicks** (modern format with nativeFlowResponseMessage)
+- **Legacy button clicks** (buttonsResponseMessage, templateButtonReplyMessage)
+- **List item selections** (listResponseMessage)
+
+This field is only populated for interactive response messages. For regular text messages, this will be null/undefined.
+
+The body field will contain a concatenated format: "DisplayText [selectedId]" for easy parsing.`,
+    required: false,
+    type: () => InteractiveResponse,
+  })
+  interactiveResponse?: InteractiveResponse;
 
   /** Returns message in a raw format */
   @ApiProperty({
