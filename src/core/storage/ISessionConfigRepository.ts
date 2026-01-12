@@ -15,4 +15,6 @@ export abstract class ISessionConfigRepository {
   abstract getAllConfigs(): Promise<string[]>;
 
   abstract init(): Promise<void>;
+
+  abstract close(): Promise<void>;
 }
