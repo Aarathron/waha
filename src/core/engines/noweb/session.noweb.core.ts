@@ -3077,12 +3077,12 @@ export function extractInteractiveResponse(
     return {
       type: InteractiveResponseType.LIST,
       selectedId: listResponse.singleSelectReply.selectedRowId,
-      selectedText: listResponse.title || listResponse.description,
+      // Note: singleSelectReply only contains selectedRowId, not the row's display text.
+      // The original row title would need to be looked up from the sent list message.
+      selectedText: undefined,
       name: 'single_select',
       params: {
         id: listResponse.singleSelectReply.selectedRowId,
-        title: listResponse.title,
-        description: listResponse.description,
       },
     };
   }
