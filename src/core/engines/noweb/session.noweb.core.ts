@@ -16,6 +16,7 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
   MiscMessageGenerationOptions,
   normalizeMessageContent,
+  prepareWAMessageMedia,
   PresenceData,
   proto,
   SocketConfig,
@@ -115,6 +116,7 @@ import {
   MessageReplyRequest,
   MessageStarRequest,
   MessageTextRequest,
+  MessageVideoRequest,
   MessageVoiceRequest,
   SendSeenRequest,
   WANumberExistResult,
@@ -339,9 +341,9 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     // Detect browser
     let browser = ['Ubuntu', 'Chrome', '22.04.4'] as WABrowserDescription;
     let deviceName =
-      this.sessionConfig.client?.deviceName ?? WAHA_CLIENT_DEVICE_NAME;
+      this.sessionConfig?.client?.deviceName ?? WAHA_CLIENT_DEVICE_NAME;
     let browserName =
-      this.sessionConfig.client?.browserName ?? WAHA_CLIENT_BROWSER_NAME;
+      this.sessionConfig?.client?.browserName ?? WAHA_CLIENT_BROWSER_NAME;
     if (browserName && !deviceName) {
       browser = Browsers.appropriate(browserName);
     } else if (!browserName && deviceName) {
@@ -1030,16 +1032,88 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     return await this.sock.sendMessage(request.chatId, message, options);
   }
 
-  sendImage(request: MessageImageRequest) {
-    throw new AvailableInPlusVersion();
+  private async getFileBuffer(file: any): Promise<Buffer> {
+    if (!file) {
+      throw new UnprocessableEntityException(
+        'File is required. Provide either "file.url" or "file.data".',
+      );
+    }
+    if ('url' in file && file.url) {
+      return await this.fetch(file.url);
+    }
+    if ('data' in file && file.data) {
+      return Buffer.from(file.data, 'base64');
+    }
+    throw new UnprocessableEntityException(
+      'Either "file.url" or "file.data" must be specified.',
+    );
   }
 
-  sendFile(request: MessageFileRequest) {
-    throw new AvailableInPlusVersion();
+  @Activity()
+  async sendImage(request: MessageImageRequest) {
+    const chatId = toJID(this.ensureSuffix(request.chatId));
+    const buffer = await this.getFileBuffer(request.file as any);
+    const options = await this.getMessageOptions(request);
+    const message: any = {
+      image: buffer,
+      mimetype: (request.file as any)?.mimetype,
+      caption: request.caption || undefined,
+      mentions: request.mentions?.map(toJID),
+    };
+    return await this.sock.sendMessage(chatId, message, options);
   }
 
-  sendVoice(request: MessageVoiceRequest) {
-    throw new AvailableInPlusVersion();
+  @Activity()
+  async sendFile(request: MessageFileRequest) {
+    const chatId = toJID(this.ensureSuffix(request.chatId));
+    const buffer = await this.getFileBuffer(request.file as any);
+    const options = await this.getMessageOptions(request);
+    const filename =
+      (request.file as any)?.filename || (request.file as any)?.fileName;
+    const message: any = {
+      document: buffer,
+      mimetype: (request.file as any)?.mimetype,
+      fileName: filename || 'file',
+      caption: request.caption || undefined,
+      mentions: request.mentions?.map(toJID),
+    };
+    return await this.sock.sendMessage(chatId, message, options);
+  }
+
+  @Activity()
+  async sendVideo(request: MessageVideoRequest) {
+    const chatId = toJID(this.ensureSuffix(request.chatId));
+    const buffer = await this.getFileBuffer(request.file as any);
+    const options = await this.getMessageOptions(request);
+    const message: any = {
+      video: buffer,
+      mimetype: (request.file as any)?.mimetype,
+      caption: (request as any)?.caption || undefined,
+      mentions: (request as any)?.mentions?.map(toJID),
+    };
+    return await this.sock.sendMessage(chatId, message, options);
+  }
+
+  @Activity()
+  async sendVoice(request: MessageVoiceRequest) {
+    if (request.convert) {
+      throw new UnprocessableEntityException(
+        'Voice conversion is not available in this build. Send an OGG/Opus voice note (audio/ogg; codecs=opus) or pre-convert your audio and set "convert": false.',
+      );
+    }
+    const chatId = toJID(this.ensureSuffix(request.chatId));
+    const buffer = await this.getFileBuffer(request.file as any);
+    const options = await this.getMessageOptions(request);
+    const mimetype = (request.file as any)?.mimetype;
+    const isOpus =
+      typeof mimetype === 'string' &&
+      (mimetype.includes('opus') || mimetype === 'audio/ogg');
+    const message: any = {
+      audio: buffer,
+      mimetype: mimetype || (isOpus ? 'audio/ogg; codecs=opus' : undefined),
+      ptt: isOpus,
+    };
+    return await this.sock.sendMessage(chatId, message, options);
   }
 
   sendLinkCustomPreview(
@@ -1052,10 +1126,21 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     file: RemoteFile | BinaryFile,
     type,
   ): Promise<any> {
-    if (file && ('url' in file || 'data' in file)) {
-      throw new AvailableInPlusVersion('Sending media (image, video, pdf)');
+    if (!file) {
+      return undefined;
     }
-    return;
+    if (type !== 'image') {
+      throw new UnprocessableEntityException(
+        `Unsupported media type '${type}' for interactive header media`,
+      );
+    }
+    const buffer = await this.getFileBuffer(file as any);
+    const prepared = await prepareWAMessageMedia(
+      { image: buffer },
+      { upload: this.sock.waUploadToServer },
+    );
+    // Baileys returns { imageMessage } inside the prepared object.
+    return (prepared as any)?.imageMessage;
   }
 
   @Activity()

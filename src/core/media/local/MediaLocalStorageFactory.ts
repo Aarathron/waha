@@ -18,6 +18,8 @@ export class MediaLocalStorageFactory extends MediaStorageFactory {
       this.config.filesFolder,
       this.config.filesURL,
       this.config.filesLifetime,
+      this.config.urlSigningKey,
+      this.config.urlTtlSeconds,
     );
   }
 }

@@ -22,8 +22,8 @@ import { BasicAuthFunction } from '@waha/core/auth/basicAuth';
 import { WebSocketAuth } from '@waha/core/auth/WebSocketAuth';
 import { GowsEngineConfigService } from '@waha/core/config/GowsEngineConfigService';
 import { WebJSEngineConfigService } from '@waha/core/config/WebJSEngineConfigService';
-import { MediaLocalStorageModule } from '@waha/core/media/local/media.local.storage.module';
 import { MediaLocalStorageConfig } from '@waha/core/media/local/MediaLocalStorageConfig';
+import { MediaStorageModule } from '@waha/core/media/media.storage.module';
 import { ChannelsInfoServiceCore } from '@waha/core/services/ChannelsInfoServiceCore';
 import { parseBool } from '@waha/helpers';
 import { BufferJsonReplacerInterceptor } from '@waha/nestjs/BufferJsonReplacerInterceptor';
@@ -56,6 +56,7 @@ import { ScreenshotController } from '../api/screenshot.controller';
 import { SessionsController } from '../api/sessions.controller';
 import { StatusController } from '../api/status.controller';
 import { VersionController } from '../api/version.controller';
+import { S3Controller } from '../api/s3.controller';
 import { WhatsappConfigService } from '../config.service';
 import { SessionManager } from './abc/manager.abc';
 import { WAHAHealthCheckService } from './abc/WAHAHealthCheckService';
@@ -134,7 +135,7 @@ const IMPORTS_MEDIA = [
         .default('LOCAL'),
     }),
   }),
-  MediaLocalStorageModule,
+  MediaStorageModule,
 ];
 
 // Ban Prevention Module for 21-day warmup and rate limiting
@@ -168,6 +169,7 @@ export const CONTROLLERS = [
   ServerDebugController,
   VersionController,
   MediaController,
+  S3Controller,
   ...AppsModuleExports.controllers,
 ];
 export const PROVIDERS_BASE: Provider[] = [

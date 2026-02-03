@@ -3,7 +3,6 @@ import { ServeStaticModule } from '@nestjs/serve-static';
 import { WhatsappConfigService } from '@waha/config.service';
 import { MediaLocalStorageConfig } from '@waha/core/media/local/MediaLocalStorageConfig';
 import { MediaLocalStorageFactory } from '@waha/core/media/local/MediaLocalStorageFactory';
-import { MediaStorageFactory } from '@waha/core/media/MediaStorageFactory';
 
 @Module({
   imports: [
@@ -22,13 +21,10 @@ import { MediaStorageFactory } from '@waha/core/media/MediaStorageFactory';
     }),
   ],
   providers: [
-    {
-      provide: MediaStorageFactory,
-      useClass: MediaLocalStorageFactory,
-    },
+    MediaLocalStorageFactory,
     WhatsappConfigService,
     MediaLocalStorageConfig,
   ],
-  exports: [MediaStorageFactory],
+  exports: [MediaLocalStorageFactory],
 })
 export class MediaLocalStorageModule {}
