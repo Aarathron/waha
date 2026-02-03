@@ -16,8 +16,20 @@ import { MediaS3StorageModule } from '@waha/core/media/s3/media.s3.storage.modul
         localFactory: MediaLocalStorageFactory,
         s3Factory: MediaS3StorageFactory,
       ) => {
-        const storage = config.get<string>('WAHA_MEDIA_STORAGE', 'LOCAL');
-        return storage === 'S3' ? s3Factory : localFactory;
+        const rawValue = config.get<string>('WAHA_MEDIA_STORAGE', 'LOCAL');
+        const storage = rawValue?.toUpperCase()?.trim();
+
+        if (storage === 'S3') {
+          return s3Factory;
+        }
+        if (storage === 'LOCAL') {
+          return localFactory;
+        }
+
+        throw new Error(
+          `Invalid WAHA_MEDIA_STORAGE value: '${rawValue}'. ` +
+            `Must be 'LOCAL' or 'S3'.`,
+        );
       },
       inject: [ConfigService, MediaLocalStorageFactory, MediaS3StorageFactory],
     },

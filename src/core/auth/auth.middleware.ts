@@ -38,11 +38,12 @@ export class AuthMiddleware implements NestMiddleware {
 
     const expRaw = req?.query?.exp;
     const sig = req?.query?.sig;
-    if (!expRaw || !sig) {
+    // Validate types to prevent array injection (e.g., ?exp=1&exp=2)
+    if (typeof expRaw !== 'string' || typeof sig !== 'string' || !expRaw || !sig) {
       return false;
     }
 
-    const exp = parseInt(String(expRaw), 10);
+    const exp = parseInt(expRaw, 10);
     if (!Number.isFinite(exp)) {
       return false;
     }
@@ -62,7 +63,7 @@ export class AuthMiddleware implements NestMiddleware {
         .slice(1)
         .map((p) => decodeURIComponent(p))
         .join('/');
-      return verifyS3Proxy({ bucket, key, exp, secret }, String(sig));
+      return verifyS3Proxy({ bucket, key, exp, secret }, sig);
     }
 
     // Local /api/files/<key> (served by static middleware)
@@ -75,7 +76,7 @@ export class AuthMiddleware implements NestMiddleware {
     if (!key) {
       return false;
     }
-    return verifyS3Proxy({ bucket: 'files', key, exp, secret }, String(sig));
+    return verifyS3Proxy({ bucket: 'files', key, exp, secret }, sig);
   }
 
   use(req: any, res: any, next: () => void) {

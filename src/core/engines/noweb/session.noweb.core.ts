@@ -1108,10 +1108,11 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     const isOpus =
       typeof mimetype === 'string' &&
       (mimetype.includes('opus') || mimetype === 'audio/ogg');
+    // If no mimetype provided, assume it's a PTT voice note (default opus format)
     const message: any = {
       audio: buffer,
-      mimetype: mimetype || (isOpus ? 'audio/ogg; codecs=opus' : undefined),
-      ptt: isOpus,
+      mimetype: mimetype || 'audio/ogg; codecs=opus',
+      ptt: isOpus || !mimetype,
     };
     return await this.sock.sendMessage(chatId, message, options);
   }

@@ -74,9 +74,12 @@ export class MediaLocalStorage implements IMediaStorage {
     if (fs.existsSync(this.filesFolder)) {
       // Use rimraf to delete all contents in the folder
       const pattern = `${this.filesFolder}/*`;
-      rimraf(pattern, { glob: true }).then(() => {
+      try {
+        await rimraf(pattern, { glob: true });
         this.log.info(`Purged files in: ${this.filesFolder}`);
-      });
+      } catch (err) {
+        this.log.error({ err, pattern }, 'Failed to purge files');
+      }
     } else {
       fs.mkdirSync(this.filesFolder);
       this.log.info(`Directory '${this.filesFolder}' created from scratch`);
@@ -98,8 +101,15 @@ export class MediaLocalStorage implements IMediaStorage {
     }
     setTimeout(
       () =>
-        fs.unlink(filepath, () => {
-          this.log.info(`File ${filepath} was removed`);
+        fs.unlink(filepath, (err) => {
+          if (err) {
+            // ENOENT (file not found) is acceptable - file may have been manually deleted
+            if (err.code !== 'ENOENT') {
+              this.log.warn({ err, filepath }, 'Failed to remove file');
+            }
+          } else {
+            this.log.info(`File ${filepath} was removed`);
+          }
         }),
       this.lifetimeMs,
     );

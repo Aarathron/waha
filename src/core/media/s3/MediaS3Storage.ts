@@ -66,8 +66,26 @@ export class MediaS3Storage implements IMediaStorage {
       ContentType,
       Metadata: getMetadata(data),
     });
-    await this.client.send(cmd);
-    return true;
+
+    try {
+      await this.client.send(cmd);
+      return true;
+    } catch (err: any) {
+      this.log.error(
+        {
+          err,
+          bucket: this.bucket,
+          key: Key,
+          session: data.session,
+          messageId: data.message.id,
+        },
+        'Failed to upload media to S3',
+      );
+      throw new Error(
+        `Failed to save media to S3: ${err?.message || 'Unknown error'}. ` +
+          `Session: ${data.session}, Message: ${data.message.id}`,
+      );
+    }
   }
 
   async exists(data: MediaData): Promise<boolean> {
@@ -115,18 +133,29 @@ export class MediaS3Storage implements IMediaStorage {
 
     // Fall back to presigned URL. Note: requires the S3 endpoint to be reachable
     // from whoever will download the file.
-    const presigned = await getSignedUrl(
-      this.client,
-      new GetObjectCommand({ Bucket, Key }),
-      { expiresIn: this.cfg.proxyUrlTtlSeconds },
-    );
-    return { url: presigned, s3 };
+    try {
+      const presigned = await getSignedUrl(
+        this.client,
+        new GetObjectCommand({ Bucket, Key }),
+        { expiresIn: this.cfg.proxyUrlTtlSeconds },
+      );
+      return { url: presigned, s3 };
+    } catch (err: any) {
+      this.log.error(
+        { err, bucket: Bucket, key: Key },
+        'Failed to generate presigned URL',
+      );
+      throw new Error(
+        `Failed to generate presigned URL for ${Bucket}/${Key}: ${err?.message || 'Unknown error'}`,
+      );
+    }
   }
 
   async purge(): Promise<void> {
     // Intentionally NOOP: deleting from an object store can be expensive and unsafe
-    // without explicit configuration. Keep parity with LOCAL by cleaning on write only.
-    this.log.info('S3 media storage purge skipped');
+    // without explicit configuration. Unlike LOCAL storage which purges on startup,
+    // S3 storage skips purging - use S3 lifecycle policies for cleanup instead.
+    this.log.info('S3 media storage purge skipped - use S3 lifecycle policies for cleanup');
     return;
   }
 

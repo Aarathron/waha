@@ -1,6 +1,8 @@
 import {
   Controller,
+  ForbiddenException,
   Get,
+  InternalServerErrorException,
   NotFoundException,
   Param,
   Query,
@@ -10,16 +12,19 @@ import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { S3Client, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { MediaS3StorageConfig } from '@waha/core/media/s3/MediaS3StorageConfig';
-import { verifyS3Proxy } from '@waha/core/media/s3/S3ProxySignature';
 import { parseBool } from '@waha/helpers';
+import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 
 @ApiSecurity('api_key')
 @Controller('api/s3')
-@ApiTags('🗄️ S3')
+@ApiTags('S3')
 export class S3Controller {
   private readonly client: S3Client;
 
-  constructor(private cfg: MediaS3StorageConfig) {
+  constructor(
+    private cfg: MediaS3StorageConfig,
+    @InjectPinoLogger(S3Controller.name) private readonly log: PinoLogger,
+  ) {
     const credentials =
       cfg.accessKeyId && cfg.secretAccessKey
         ? { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey }
@@ -41,31 +46,16 @@ export class S3Controller {
   async getObject(
     @Param('bucket') bucket: string,
     @Param('key') key: string,
-    @Query('exp') expRaw: string | undefined,
-    @Query('sig') sig: string | undefined,
     @Query('head') headRaw: string | undefined,
     @Res() res: Response,
   ): Promise<void> {
     const keyStr = Array.isArray(key) ? key.join('/') : String(key || '');
     const normalizedKey = keyStr.replace(/^\/+/, '');
     if (!normalizedKey) {
-      throw new NotFoundException();
+      throw new NotFoundException('Key is required');
     }
 
-    const hasApiKeyHeader = Boolean(res.req?.headers?.['x-api-key']);
-    const secret = this.cfg.proxyUrlSigningKey;
-    if (secret && !hasApiKeyHeader) {
-      const exp = parseInt(String(expRaw || ''), 10);
-      const now = Math.floor(Date.now() / 1000);
-      const ok =
-        Number.isFinite(exp) &&
-        exp > now &&
-        Boolean(sig) &&
-        verifyS3Proxy({ bucket, key: normalizedKey, exp, secret }, String(sig));
-      if (!ok) {
-        throw new NotFoundException();
-      }
-    }
+    // Signature verification is handled by AuthMiddleware - if request reaches here, it's authenticated.
 
     // Optional HEAD-only probe via ?head=true (useful for debugging)
     if (parseBool(headRaw)) {
@@ -75,8 +65,8 @@ export class S3Controller {
         );
         res.status(200).end();
         return;
-      } catch {
-        throw new NotFoundException();
+      } catch (err: any) {
+        this.handleS3Error(err, bucket, normalizedKey, 'HEAD');
       }
     }
 
@@ -85,19 +75,54 @@ export class S3Controller {
       out = await this.client.send(
         new GetObjectCommand({ Bucket: bucket, Key: normalizedKey }),
       );
-    } catch {
-      throw new NotFoundException();
+    } catch (err: any) {
+      this.handleS3Error(err, bucket, normalizedKey, 'GET');
     }
 
     const contentType = out?.ContentType || 'application/octet-stream';
     res.setHeader('Content-Type', contentType);
-    // Allow caching for a short period; signed URLs already expire.
+    if (out?.ContentLength) {
+      res.setHeader('Content-Length', out.ContentLength);
+    }
+    // Cache for 5 minutes. This is shorter than the default URL TTL (15 min)
+    // to allow re-fetches before signed URLs expire, while still reducing S3 load.
     res.setHeader('Cache-Control', 'private, max-age=300');
 
     const body = out?.Body;
     if (!body || typeof body.pipe !== 'function') {
-      throw new NotFoundException();
+      this.log.error({ bucket, key: normalizedKey }, 'S3 response body is not a readable stream');
+      throw new InternalServerErrorException('Invalid S3 response');
     }
+
+    // Handle stream errors to prevent silent truncation
+    body.on('error', (err: Error) => {
+      this.log.error({ err, bucket, key: normalizedKey }, 'S3 stream error during transfer');
+      if (!res.headersSent) {
+        res.status(500).end('Stream error');
+      } else {
+        res.destroy(err);
+      }
+    });
+
     body.pipe(res);
+  }
+
+  private handleS3Error(err: any, bucket: string, key: string, operation: string): never {
+    const status = err?.$metadata?.httpStatusCode;
+    const code = err?.name || err?.Code || err?.code;
+
+    this.log.error(
+      { err, bucket, key, status, code, operation },
+      `S3 ${operation} operation failed`,
+    );
+
+    if (status === 404 || code === 'NotFound' || code === 'NoSuchKey') {
+      throw new NotFoundException(`Object not found: ${bucket}/${key}`);
+    }
+    if (status === 403 || code === 'AccessDenied') {
+      throw new ForbiddenException('Access denied to S3 object');
+    }
+
+    throw new InternalServerErrorException('Failed to retrieve object from S3');
   }
 }

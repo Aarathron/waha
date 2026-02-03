@@ -1,12 +1,29 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { WhatsappConfigService } from '@waha/config.service';
 import { parseBool } from '@waha/helpers';
+import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 
 @Injectable()
-export class MediaS3StorageConfig {
+export class MediaS3StorageConfig implements OnModuleInit {
   public proxyUri = '/api/s3';
 
-  constructor(private config: WhatsappConfigService) {}
+  constructor(
+    private config: WhatsappConfigService,
+    @InjectPinoLogger(MediaS3StorageConfig.name)
+    private readonly log: PinoLogger,
+  ) {}
+
+  onModuleInit() {
+    // Warn about partial credentials configuration
+    const hasAccessKey = !!this.accessKeyId;
+    const hasSecretKey = !!this.secretAccessKey;
+    if (hasAccessKey !== hasSecretKey) {
+      this.log.warn(
+        'Partial S3 credentials detected. Both WAHA_S3_ACCESS_KEY_ID and ' +
+          'WAHA_S3_SECRET_ACCESS_KEY must be set, or neither (for IAM role auth).',
+      );
+    }
+  }
 
   get bucket(): string {
     return this.config.get('WAHA_S3_BUCKET', '');
