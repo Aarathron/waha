@@ -219,6 +219,7 @@ import {
 import { extractWALocation } from '@waha/core/engines/waproto/locaiton';
 import { extractVCards } from '@waha/core/engines/waproto/vcards';
 import { Activity } from '@waha/core/abc/activity';
+import { LocalStore } from '@waha/core/storage/LocalStore';
 import {
   WAHA_CLIENT_BROWSER_NAME,
   WAHA_CLIENT_DEVICE_NAME,
@@ -588,10 +589,11 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
           return;
         }
 
-        // Unknown error or logged out
+        // Logged out (401) - clean auth state so next start generates fresh QR
         this.logger.error(
           `Connection closed due to '${lastDisconnect.error}', do not reconnect the session.`,
         );
+        await this.cleanupAuthOnLogout();
         await this.failed();
       }
 
@@ -645,6 +647,39 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
     await this.end();
     await this.store?.close();
+  }
+
+  /**
+   * Clean persisted auth state after a 401 (loggedOut) disconnect.
+   * Removes credential files so the next session start generates a fresh QR code.
+   */
+  private async cleanupAuthOnLogout() {
+    try {
+      // Close the in-memory auth store
+      await this.authNOWEBStore?.close?.();
+      this.authNOWEBStore = null;
+
+      // Remove persisted auth files from the session directory
+      if (this.sessionStore instanceof LocalStore) {
+        const fs = require('fs-extra');
+        const KEEP_FILES = /^\.waha\.session\..*$/;
+        const sessionDir = this.sessionStore.getSessionDirectory(this.name);
+        if (await fs.pathExists(sessionDir)) {
+          const files = await fs.readdir(sessionDir);
+          for (const file of files) {
+            if (!file.match(KEEP_FILES)) {
+              await fs.remove(`${sessionDir}/${file}`);
+            }
+          }
+        }
+      }
+      this.logger.info(
+        'Auth state cleaned after logout, next start will require QR scan.',
+      );
+    } catch (err) {
+      this.logger.error('Failed to clean auth state after logout');
+      this.logger.error(err, err.stack);
+    }
   }
 
   private fixMessages() {
@@ -933,14 +968,33 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   ): Promise<WANumberExistResult> {
     let phone = request.phone.split('@')[0];
     phone = phone.replace(/\+/g, '');
-    const [result] = await this.sock.onWhatsApp(phone);
-    if (!result || !result.exists) {
+
+    const retryOptions = {
+      retries: 3,
+      minTimeout: 500,
+      maxTimeout: 2000,
+    };
+
+    try {
+      const results = await promiseRetry(
+        (retry) => this.sock.onWhatsApp(phone).catch(retry),
+        retryOptions,
+      );
+      const result = results?.[0];
+      if (!result?.exists) {
+        return { numberExists: false };
+      }
+      return {
+        numberExists: true,
+        chatId: toCusFormat(result.jid),
+      };
+    } catch (err) {
+      this.logger.error(
+        `Failed to check number status for '${phone}' after retries`,
+      );
+      this.logger.error(err, err.stack);
       return { numberExists: false };
     }
-    return {
-      numberExists: true,
-      chatId: toCusFormat(result.jid),
-    };
   }
 
   async generateNewMessageId(): Promise<string> {
