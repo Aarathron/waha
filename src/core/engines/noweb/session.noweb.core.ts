@@ -563,7 +563,25 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   private async handleConnectionClose(lastDisconnect: any) {
     const error = lastDisconnect?.error as any;
     const statusCode: number | undefined = error?.output?.statusCode;
-    const action = classifyDisconnect(statusCode);
+    let action = classifyDisconnect(statusCode);
+
+    // Safety net: if the same permanent-category code keeps repeating,
+    // the StatusTracker confirms it's genuinely permanent
+    if (
+      action === DisconnectAction.TRANSIENT &&
+      this.statusTracker.trackDisconnectCode(statusCode)
+    ) {
+      this.logger.warn(
+        { statusCode },
+        'Disconnect code repeated — upgrading to PERMANENT',
+      );
+      action = DisconnectAction.PERMANENT;
+    }
+
+    // Always track the code to keep the tracker's state accurate
+    if (action !== DisconnectAction.TRANSIENT) {
+      this.statusTracker.trackDisconnectCode(statusCode);
+    }
 
     this.logger.info(
       {
