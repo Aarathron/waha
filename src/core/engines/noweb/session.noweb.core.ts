@@ -1036,6 +1036,14 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       throw new UnprocessableEntityException(
         `Can not get screenshot for non chrome based engine.`,
       );
+    } else if (this.status === WAHASessionStatus.FAILED) {
+      throw new UnprocessableEntityException(
+        `The session has failed. Please restart the session and try again.`,
+      );
+    } else if (this.status === WAHASessionStatus.STOPPED) {
+      throw new UnprocessableEntityException(
+        `The session is stopped. Please start the session first.`,
+      );
     } else {
       throw new UnprocessableEntityException(`Unknown status - ${this.status}`);
     }
