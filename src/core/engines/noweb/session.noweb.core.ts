@@ -3,7 +3,6 @@ import makeWASocket, {
   Chat,
   Contact,
   decryptPollVote,
-  DisconnectReason,
   downloadMediaMessage,
   extractMessageContent,
   generateMessageIDV2,
@@ -210,6 +209,10 @@ import { debounceTime, map } from 'rxjs/operators';
 import { INowebStore } from './store/INowebStore';
 import { NowebPersistentStore } from './store/NowebPersistentStore';
 import { NowebStorageFactoryCore } from './store/NowebStorageFactoryCore';
+import {
+  classifyDisconnect,
+  DisconnectAction,
+} from '@waha/core/engines/noweb/disconnect-classifier';
 import { ensureNumber, extractMediaContent } from './utils';
 import { Agents } from '@waha/core/engines/noweb/types';
 import {
@@ -536,74 +539,155 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   protected listenConnectionEvents() {
     this.logger.debug(`Start listening ${BaileysEvents.CONNECTION_UPDATE}...`);
     this.sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr, isNewLogin } = update;
-      if (isNewLogin) {
-        this.restartClient();
-      } else if (connection === 'open') {
-        this.qr.save('');
-        this.status = WAHASessionStatus.WORKING;
-        // Do we need to resubscribe?
-        // Ideally not, we need to explicitly call interesting
-        // jids every 1 minute
-        // this.resubscribeToKnownPresences();
-        return;
-      } else if (connection === 'close') {
-        this.qr.save('');
-        const error = lastDisconnect.error as any;
-        const statusCode = error?.output?.statusCode;
-
-        // Restart required from the server
-        const restartRequired = statusCode === DisconnectReason.restartRequired;
-        if (restartRequired) {
+      try {
+        const { connection, lastDisconnect, qr, isNewLogin } = update;
+        if (isNewLogin) {
           this.restartClient();
+        } else if (connection === 'open') {
+          this.qr.save('');
+          this.status = WAHASessionStatus.WORKING;
           return;
+        } else if (connection === 'close') {
+          this.qr.save('');
+          await this.handleConnectionClose(lastDisconnect);
         }
 
-        // Stuck in STARTING status
-        if (this.statusTracker.isStuckInStarting()) {
-          this.logger.error(
-            'Session stuck in STARTING status, force stopping the session.',
-          );
-          await this.failed();
-          return;
+        // Save QR
+        if (qr) {
+          this.qr.save(qr);
+          this.printQR(this.qr);
+          this.status = WAHASessionStatus.SCAN_QR_CODE;
         }
+      } catch (err) {
+        this.logger.error(
+          { err: err.message, stack: err.stack },
+          'Unhandled error in connection.update handler',
+        );
+        this.status = WAHASessionStatus.FAILED;
+      }
+    });
+  }
 
-        // Do not reconnect if the QR code has not been scanned yet
-        if (this.status == WAHASessionStatus.SCAN_QR_CODE) {
+  private async handleConnectionClose(lastDisconnect: any) {
+    if (lastDisconnect == null) {
+      this.logger.warn(
+        'Connection closed without disconnect info — treating as transient',
+      );
+    }
+
+    const error = lastDisconnect?.error as any;
+    const statusCode: number | undefined = error?.output?.statusCode;
+    let action = classifyDisconnect(statusCode);
+
+    // Safety net: if the same code keeps repeating (regardless of classifier
+    // category), upgrade to PERMANENT. This catches unknown codes that the
+    // classifier doesn't yet recognize as permanent.
+    const isRepeatedCode =
+      this.statusTracker.trackDisconnectCode(statusCode);
+    if (action === DisconnectAction.TRANSIENT && isRepeatedCode) {
+      this.logger.warn(
+        { statusCode },
+        'Disconnect code repeated — upgrading to PERMANENT',
+      );
+      action = DisconnectAction.PERMANENT;
+    }
+
+    // Log at severity appropriate to the action
+    const logData = {
+      statusCode,
+      action,
+      error: lastDisconnect?.error?.message,
+    };
+    if (action === DisconnectAction.PERMANENT) {
+      this.logger.error(logData, `Connection closed, action: ${action}`);
+    } else if (action === DisconnectAction.TRANSIENT) {
+      this.logger.warn(logData, `Connection closed, action: ${action}`);
+    } else {
+      this.logger.info(logData, `Connection closed, action: ${action}`);
+    }
+
+    // Stuck in STARTING status — break the loop regardless of action
+    if (this.statusTracker.isStuckInStarting()) {
+      this.logger.error(
+        'Session stuck in STARTING status, force stopping the session.',
+      );
+      await this.failed();
+      return;
+    }
+
+    switch (action) {
+      case DisconnectAction.PERMANENT:
+        await this.handlePermanentDisconnect(statusCode, lastDisconnect);
+        return;
+
+      case DisconnectAction.RESTART:
+        this.restartClient();
+        return;
+
+      case DisconnectAction.TRANSIENT:
+        if (this.status === WAHASessionStatus.SCAN_QR_CODE) {
           this.logger.warn(
             'QR code has not been scanned yet, force stopping the session.',
           );
           await this.failed();
           return;
         }
-
-        // Reconnect if not logged out
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        if (shouldReconnect) {
-          if (lastDisconnect.error) {
-            this.logger.info(
-              `Connection closed due to '${lastDisconnect.error}', reconnecting...`,
-            );
-          }
-          this.restartClient();
-          return;
+        if (lastDisconnect?.error) {
+          this.logger.info(
+            `Connection closed due to '${lastDisconnect.error?.message}', reconnecting...`,
+          );
         }
+        this.restartClient();
+        return;
+    }
+  }
 
-        // Logged out (401) - clean auth state so next start generates fresh QR
-        this.logger.error(
-          `Connection closed due to '${lastDisconnect.error}', do not reconnect the session.`,
-        );
-        await this.cleanupAuthOnLogout();
-        await this.failed();
-      }
+  /**
+   * Handle permanent disconnects (auth is dead).
+   * Stops all reconnection attempts, cleans credentials, and transitions
+   * to SCAN_QR_CODE so the dashboard/API shows the session needs re-pairing.
+   */
+  private async handlePermanentDisconnect(
+    statusCode: number | undefined,
+    lastDisconnect: any,
+  ) {
+    this.logger.error(
+      { statusCode, error: lastDisconnect?.error?.message },
+      `Permanent disconnect (status ${statusCode}): '${lastDisconnect?.error?.message}'. ` +
+        'Cleaning auth state, session will require QR scan.',
+    );
 
-      // Save QR
-      if (qr) {
-        this.qr.save(qr);
-        this.printQR(this.qr);
-        this.status = WAHASessionStatus.SCAN_QR_CODE;
-      }
-    });
+    const authCleaned = await this.cleanupAuthOnLogout();
+
+    // Stop reconnection attempts
+    this.shouldRestart = false;
+    this.startDelayedJob.cancel();
+    this.autoRestartJob.stop();
+
+    // Transition to SCAN_QR_CODE (not FAILED) so the user sees
+    // the session needs re-pairing rather than thinking it crashed.
+    // If auth cleanup failed, use FAILED since stale creds remain.
+    this.status = authCleaned
+      ? WAHASessionStatus.SCAN_QR_CODE
+      : WAHASessionStatus.FAILED;
+
+    try {
+      await this.end();
+    } catch (err) {
+      this.logger.error(
+        { err: err.message, stack: err.stack },
+        'Failed to end socket during permanent disconnect cleanup',
+      );
+    }
+
+    try {
+      await this.store?.close();
+    } catch (err) {
+      this.logger.error(
+        { err: err.message, stack: err.stack },
+        'Failed to close store during permanent disconnect cleanup',
+      );
+    }
   }
 
   async stop() {
@@ -650,10 +734,11 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   }
 
   /**
-   * Clean persisted auth state after a 401 (loggedOut) disconnect.
+   * Clean persisted auth state after a permanent disconnect (401/403/405).
    * Removes credential files so the next session start generates a fresh QR code.
+   * Returns true if cleanup succeeded, false if it failed.
    */
-  private async cleanupAuthOnLogout() {
+  private async cleanupAuthOnLogout(): Promise<boolean> {
     try {
       // Close the in-memory auth store
       await this.authNOWEBStore?.close?.();
@@ -674,11 +759,13 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
         }
       }
       this.logger.info(
-        'Auth state cleaned after logout, next start will require QR scan.',
+        'Auth state cleaned, next start will require QR scan.',
       );
+      return true;
     } catch (err) {
-      this.logger.error('Failed to clean auth state after logout');
+      this.logger.error('Failed to clean auth state after disconnect');
       this.logger.error(err, err.stack);
+      return false;
     }
   }
 
