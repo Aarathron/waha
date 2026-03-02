@@ -15,7 +15,7 @@ export enum DisconnectAction {
  * 403 = forbidden (account banned or restricted)
  * 405 = registration rejected (WhatsApp rejects pairing, auth keys are stale)
  */
-const PERMANENT_CODES = new Set([401, 403, 405]);
+export const PERMANENT_CODES = new Set([401, 403, 405]);
 
 /**
  * Status codes where the server explicitly tells us to restart.

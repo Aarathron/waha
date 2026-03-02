@@ -1,3 +1,4 @@
+import { PERMANENT_CODES } from '@waha/core/engines/noweb/disconnect-classifier';
 import { WAHASessionStatus } from '../structures/enums.dto';
 
 const STUCK_IN_STARTING_THRESHOLD = 60;
@@ -7,11 +8,6 @@ const STUCK_IN_STARTING_THRESHOLD = 60;
  * before we short-circuit and treat it as definitely permanent.
  */
 const PERMANENT_CODE_REPEAT_THRESHOLD = 3;
-
-/**
- * Codes that are permanently fatal — auth is dead, retrying won't help.
- */
-const PERMANENT_CODES = new Set([401, 403, 405]);
 
 /**
  * Tracks session status transitions and disconnect codes to detect
