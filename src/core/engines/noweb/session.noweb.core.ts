@@ -258,6 +258,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   storageFactory = new NowebStorageFactoryCore();
   private startDelayedJob: SingleDelayedJobRunner;
   private shouldRestart: boolean;
+  private permanentRestartAttempted: boolean = false;
 
   private autoRestartJob: SinglePeriodicJobRunner;
   private msgRetryCounterCache: NodeCache;
@@ -545,6 +546,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
           this.restartClient();
         } else if (connection === 'open') {
           this.qr.save('');
+          this.permanentRestartAttempted = false;
           this.status = WAHASessionStatus.WORKING;
           return;
         } else if (connection === 'close') {
@@ -644,8 +646,8 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
   /**
    * Handle permanent disconnects (auth is dead).
-   * Stops all reconnection attempts, cleans credentials, and transitions
-   * to SCAN_QR_CODE so the dashboard/API shows the session needs re-pairing.
+   * Cleans credentials, then either auto-restarts to generate a fresh QR
+   * or falls back to FAILED if cleanup failed or already attempted.
    */
   private async handlePermanentDisconnect(
     statusCode: number | undefined,
@@ -659,17 +661,32 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
     const authCleaned = await this.cleanupAuthOnLogout();
 
-    // Stop reconnection attempts
+    if (authCleaned && !this.permanentRestartAttempted) {
+      // Auto-restart with clean credentials so Baileys generates a fresh QR.
+      // restartClient() schedules end() + start() via startDelayedJob.
+      this.permanentRestartAttempted = true;
+      this.logger.info(
+        'Restarting session with clean credentials to generate QR code...',
+      );
+      this.restartClient();
+      return;
+    }
+
+    // Auth cleanup failed or already attempted a restart — give up.
+    if (!authCleaned) {
+      this.logger.error(
+        'Auth cleanup failed, stale credentials remain. Setting session to FAILED.',
+      );
+    } else {
+      this.logger.error(
+        'Permanent disconnect recurred after restart. Setting session to FAILED.',
+      );
+    }
+
     this.shouldRestart = false;
     this.startDelayedJob.cancel();
     this.autoRestartJob.stop();
-
-    // Transition to SCAN_QR_CODE (not FAILED) so the user sees
-    // the session needs re-pairing rather than thinking it crashed.
-    // If auth cleanup failed, use FAILED since stale creds remain.
-    this.status = authCleaned
-      ? WAHASessionStatus.SCAN_QR_CODE
-      : WAHASessionStatus.FAILED;
+    this.status = WAHASessionStatus.FAILED;
 
     try {
       await this.end();
