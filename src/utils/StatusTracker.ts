@@ -1,17 +1,17 @@
-import { PERMANENT_CODES } from '@waha/core/engines/noweb/disconnect-classifier';
 import { WAHASessionStatus } from '../structures/enums.dto';
 
 const STUCK_IN_STARTING_THRESHOLD = 60;
 
 /**
- * Consecutive occurrences of the same permanent disconnect code
- * before we short-circuit and treat it as definitely permanent.
+ * Consecutive occurrences of the same disconnect code
+ * before we treat it as a confirmed repeated failure.
  */
-const PERMANENT_CODE_REPEAT_THRESHOLD = 3;
+const DISCONNECT_CODE_REPEAT_THRESHOLD = 3;
 
 /**
- * Tracks session status transitions and disconnect codes to detect
- * stuck sessions and permanent failures.
+ * Per-session tracker for status transitions and disconnect codes.
+ * Detects stuck sessions (continuous STARTING) and repeated failures
+ * (same disconnect code appearing consecutively).
  */
 export class StatusTracker {
   private numberOfStarting: number = 0;
@@ -35,16 +35,18 @@ export class StatusTracker {
 
   /**
    * Track a disconnect status code and return whether it indicates
-   * a confirmed permanent failure (same permanent code repeated).
+   * a repeated failure (same code appearing consecutively).
    *
-   * Returns true if the same permanent-category code has appeared
-   * PERMANENT_CODE_REPEAT_THRESHOLD times consecutively.
-   * Returns false for transient codes (they should be retried).
+   * Returns true if the same code has appeared
+   * DISCONNECT_CODE_REPEAT_THRESHOLD times consecutively.
+   *
+   * Note: null/undefined codes reset the consecutive counter,
+   * breaking any in-progress detection streak.
    */
   public trackDisconnectCode(
     statusCode: number | undefined | null,
   ): boolean {
-    if (statusCode == null || !PERMANENT_CODES.has(statusCode)) {
+    if (statusCode == null) {
       this.lastDisconnectCode = statusCode;
       this.disconnectCodeCount = 0;
       return false;
@@ -57,6 +59,6 @@ export class StatusTracker {
       this.disconnectCodeCount = 1;
     }
 
-    return this.disconnectCodeCount >= PERMANENT_CODE_REPEAT_THRESHOLD;
+    return this.disconnectCodeCount >= DISCONNECT_CODE_REPEAT_THRESHOLD;
   }
 }
