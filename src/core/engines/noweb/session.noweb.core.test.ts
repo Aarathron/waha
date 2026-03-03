@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 
-// Mock @adiwajshing/baileys (ESM package) before any imports that depend on it
+// Mock @adiwajshing/baileys before any imports that depend on it
 jest.mock('@adiwajshing/baileys', () => ({
   __esModule: true,
   default: jest.fn(), // makeWASocket
@@ -55,7 +55,6 @@ import { WhatsappSessionNoWebCore } from './session.noweb.core';
 // ---------------------------------------------------------------------------
 
 function createMockLogger() {
-  const fn = () => jest.fn();
   const logger: any = {
     info: jest.fn(),
     warn: jest.fn(),
@@ -116,7 +115,7 @@ class TestableNoWebSession extends WhatsappSessionNoWebCore {
     });
   }
 
-  /** Re-expose status setter as public for test setup */
+  /** Widen the protected status setter back to public for direct test manipulation */
   public set status(value: WAHASessionStatus) {
     super.status = value;
   }
@@ -128,7 +127,8 @@ class TestableNoWebSession extends WhatsappSessionNoWebCore {
   /**
    * Override buildClient to avoid real socket/store creation.
    * Installs a mock sock with EventEmitter, a mock store,
-   * and wires up listenConnectionEvents().
+   * sets shouldRestart = true (matching real buildClient), and
+   * wires up listenConnectionEvents().
    */
   async buildClient() {
     (this as any).shouldRestart = true;
@@ -138,7 +138,9 @@ class TestableNoWebSession extends WhatsappSessionNoWebCore {
   }
 
   /**
-   * Override start to track calls and drive through buildClient().
+   * Override start to set STARTING status and call buildClient() directly
+   * (bypassing the real start() which calls buildClient in a fire-and-forget
+   * .catch() chain).
    */
   async start() {
     this.status = WAHASessionStatus.STARTING;
@@ -162,6 +164,11 @@ async function emitConnectionUpdate(
   update: Record<string, any>,
 ) {
   const listeners = session.sock.ev.listeners('connection.update');
+  if (listeners.length === 0) {
+    throw new Error(
+      'No connection.update listener registered — did listenConnectionEvents() run?',
+    );
+  }
   const handler = listeners[listeners.length - 1];
   await handler(update);
 }
@@ -196,6 +203,8 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   });
 
   afterEach(() => {
+    (session as any).startDelayedJob.cancel();
+    (session as any).autoRestartJob?.stop();
     jest.useRealTimers();
   });
 
@@ -244,6 +253,7 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
       'status %d: cleans auth, sets guard flag, schedules restart',
       async (statusCode) => {
         session.status = WAHASessionStatus.WORKING;
+        expect((session as any).startDelayedJob.scheduled).toBe(false);
 
         await emitConnectionUpdate(session, {
           connection: 'close',
@@ -254,7 +264,7 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
         expect((session as any).cleanupAuthOnLogout).toHaveBeenCalled();
         // Guard flag set
         expect((session as any).permanentRestartAttempted).toBe(true);
-        // restartClient() schedules via startDelayedJob
+        // restartClient() delegates to startDelayedJob.schedule()
         expect((session as any).startDelayedJob.scheduled).toBe(true);
       },
     );
@@ -264,8 +274,12 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   // 4. PERMANENT disconnect — guard flag (second attempt)
   // -----------------------------------------------------------------------
   describe('PERMANENT disconnect — guard flag', () => {
-    it('second permanent disconnect sets FAILED and stops restart', async () => {
+    it('second permanent disconnect sets FAILED, stops restart, and stops auto-restart job', async () => {
       session.status = WAHASessionStatus.WORKING;
+      const autoRestartStopSpy = jest.spyOn(
+        (session as any).autoRestartJob,
+        'stop',
+      );
 
       // First permanent disconnect — should restart
       await emitConnectionUpdate(session, {
@@ -281,6 +295,7 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
       });
       expect(session.status).toBe(WAHASessionStatus.FAILED);
       expect((session as any).shouldRestart).toBe(false);
+      expect(autoRestartStopSpy).toHaveBeenCalled();
     });
 
     it('auth cleanup failure sets FAILED immediately', async () => {
@@ -301,12 +316,14 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
     it('end()/store.close() errors are caught (no unhandled rejections)', async () => {
       session.status = WAHASessionStatus.WORKING;
       (session as any).permanentRestartAttempted = true;
-      (session as any).end = jest
+      const endMock = jest
         .fn()
         .mockRejectedValue(new Error('end failed'));
-      (session as any).store.close = jest
+      const storeCloseMock = jest
         .fn()
         .mockRejectedValue(new Error('store close failed'));
+      (session as any).end = endMock;
+      (session as any).store.close = storeCloseMock;
 
       // Should not throw despite both end() and store.close() rejecting
       await expect(
@@ -317,6 +334,9 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
       ).resolves.toBeUndefined();
 
       expect(session.status).toBe(WAHASessionStatus.FAILED);
+      // Verify the operations were actually attempted
+      expect(endMock).toHaveBeenCalled();
+      expect(storeCloseMock).toHaveBeenCalled();
     });
   });
 
@@ -326,6 +346,7 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   describe('RESTART disconnect', () => {
     it('515 triggers restartClient', async () => {
       session.status = WAHASessionStatus.WORKING;
+      expect((session as any).startDelayedJob.scheduled).toBe(false);
 
       await emitConnectionUpdate(session, {
         connection: 'close',
@@ -340,8 +361,9 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   // 6. TRANSIENT disconnect
   // -----------------------------------------------------------------------
   describe('TRANSIENT disconnect', () => {
-    it('408/500/unknown triggers restartClient when WORKING', async () => {
+    it('transient code triggers restartClient when WORKING', async () => {
       session.status = WAHASessionStatus.WORKING;
+      expect((session as any).startDelayedJob.scheduled).toBe(false);
 
       await emitConnectionUpdate(session, {
         connection: 'close',
@@ -354,7 +376,8 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
     it('TRANSIENT during SCAN_QR_CODE calls failed()', async () => {
       session.status = WAHASessionStatus.SCAN_QR_CODE;
 
-      // Stub failed() to avoid real cleanup (sleep, end, store.close)
+      // Stub failed() to avoid uninitialized autoRestartJob.stop() and
+      // side effects from real cleanup (sleep, end, store.close)
       const failedSpy = jest
         .fn()
         .mockImplementation(async () => {
@@ -444,6 +467,9 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
         session.status = WAHASessionStatus.STARTING;
       }
 
+      // Verify precondition: the tracker actually thinks we're stuck
+      expect((session as any).statusTracker.isStuckInStarting()).toBe(true);
+
       // Any disconnect should now trigger failed()
       await emitConnectionUpdate(session, {
         connection: 'close',
@@ -505,9 +531,13 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   // 10. Error handling in connection.update handler
   // -----------------------------------------------------------------------
   describe('error handling in handler', () => {
-    it('error thrown in handler sets status to FAILED', async () => {
-      // Make handleConnectionClose throw by sabotaging classifyDisconnect input
-      // We simulate an error by making the lastDisconnect access throw
+    it('error thrown in handler sets status to FAILED and logs the error', async () => {
+      const loggerErrorSpy = (session as any).logger.error;
+      loggerErrorSpy.mockClear();
+
+      // Force an error in handleConnectionClose by making the
+      // lastDisconnect.error getter throw. This triggers the catch block
+      // in listenConnectionEvents before classifyDisconnect is reached.
       const badDisconnect = {
         get error() {
           throw new Error('boom');
@@ -520,6 +550,51 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
       });
 
       expect(session.status).toBe(WAHASessionStatus.FAILED);
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ err: 'boom' }),
+        expect.stringContaining('Unhandled error'),
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 11. isNewLogin
+  // -----------------------------------------------------------------------
+  describe('isNewLogin', () => {
+    it('triggers restartClient', async () => {
+      expect((session as any).startDelayedJob.scheduled).toBe(false);
+      await emitConnectionUpdate(session, { isNewLogin: true });
+      expect((session as any).startDelayedJob.scheduled).toBe(true);
+    });
+
+    it('takes priority over connection open', async () => {
+      await emitConnectionUpdate(session, {
+        isNewLogin: true,
+        connection: 'open',
+      });
+      // isNewLogin path runs restartClient, NOT the open handler
+      expect((session as any).startDelayedJob.scheduled).toBe(true);
+      // Status should NOT be WORKING since connection open branch was skipped
+      expect(session.status).not.toBe(WAHASessionStatus.WORKING);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 12. restartClient guards
+  // -----------------------------------------------------------------------
+  describe('restartClient guards', () => {
+    it('restartClient is a no-op when shouldRestart is false', async () => {
+      (session as any).shouldRestart = false;
+      expect((session as any).startDelayedJob.scheduled).toBe(false);
+
+      // Trigger a RESTART disconnect — would normally schedule a restart
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(515),
+      });
+
+      // No job should have been scheduled
+      expect((session as any).startDelayedJob.scheduled).toBe(false);
     });
   });
 });
