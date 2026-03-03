@@ -661,8 +661,13 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     if (!hasEstablishedAuth) {
       this.logger.warn(
         { statusCode },
-        `Permanent code ${statusCode} during registration (no paired auth) — retrying`,
+        `Permanent code ${statusCode} during registration (no paired auth) — retrying with fresh keys`,
       );
+      // Close and discard the current auth store so makeSocket() generates
+      // fresh signal/registration keys on the next attempt. Without this,
+      // the same rejected keys are reused on every retry.
+      await this.authNOWEBStore?.close?.();
+      this.authNOWEBStore = null;
       this.restartClient();
       return;
     }
