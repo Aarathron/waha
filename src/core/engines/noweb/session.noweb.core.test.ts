@@ -4,7 +4,13 @@ import { EventEmitter } from 'events';
 jest.mock('@adiwajshing/baileys', () => ({
   __esModule: true,
   default: jest.fn(), // makeWASocket
-  Browsers: { appropriate: jest.fn(), macOS: jest.fn(), ubuntu: jest.fn(), windows: jest.fn() },
+  Browsers: {
+    appropriate: jest.fn(),
+    macOS: jest.fn().mockReturnValue(['Mac OS', 'Chrome', '14.4.1']),
+    ubuntu: jest.fn(),
+    windows: jest.fn(),
+  },
+  fetchLatestBaileysVersion: jest.fn(),
   makeCacheableSignalKeyStore: jest.fn((keys) => keys),
   proto: { Message: { create: jest.fn() } },
   normalizeMessageContent: jest.fn(),
@@ -364,7 +370,7 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   // 4b. PERMANENT disconnect — no established auth (registration rejection)
   // -----------------------------------------------------------------------
   describe('PERMANENT disconnect — no established auth', () => {
-    it('405 with no paired auth retries without setting guard flag', async () => {
+    it('405 with no paired auth clears auth store and retries', async () => {
       session.status = WAHASessionStatus.STARTING;
       // No authNOWEBStore set — simulates brand new session
       expect((session as any).startDelayedJob.scheduled).toBe(false);
@@ -380,14 +386,46 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
       expect((session as any).permanentRestartAttempted).toBe(false);
       // Should NOT have called cleanupAuthOnLogout (early return)
       expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
+      // Auth store should be null so makeSocket() generates fresh keys
+      expect((session as any).authNOWEBStore).toBeNull();
       // Status should NOT be FAILED
       expect(session.status).not.toBe(WAHASessionStatus.FAILED);
     });
 
-    it('multiple 405s with no auth keep retrying (never FAILED)', async () => {
+    it('405 with unpaired auth store clears it and retries with fresh keys', async () => {
+      session.status = WAHASessionStatus.STARTING;
+      // Auth store exists (created by makeSocket) but creds.me is null (never paired)
+      const mockClose = jest.fn();
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: null } },
+        close: mockClose,
+      };
+
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(405),
+      });
+
+      // Should close the existing auth store
+      expect(mockClose).toHaveBeenCalled();
+      // Auth store should be null so makeSocket() generates fresh keys
+      expect((session as any).authNOWEBStore).toBeNull();
+      // Should retry via restartClient
+      expect((session as any).startDelayedJob.scheduled).toBe(true);
+      // Guard flag should NOT be set
+      expect((session as any).permanentRestartAttempted).toBe(false);
+      expect(session.status).not.toBe(WAHASessionStatus.FAILED);
+    });
+
+    it('multiple 405s with no auth keep retrying with fresh keys (never FAILED)', async () => {
       session.status = WAHASessionStatus.STARTING;
 
       for (let i = 0; i < 5; i++) {
+        // Simulate makeSocket() creating a new auth store on each start()
+        (session as any).authNOWEBStore = {
+          state: { creds: { me: null } },
+          close: jest.fn(),
+        };
         // Reset the delayed job to allow re-scheduling
         (session as any).startDelayedJob.cancel();
 
@@ -397,6 +435,8 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
         });
 
         expect((session as any).permanentRestartAttempted).toBe(false);
+        // Auth store cleared each time
+        expect((session as any).authNOWEBStore).toBeNull();
         expect((session as any).startDelayedJob.scheduled).toBe(true);
         expect(session.status).not.toBe(WAHASessionStatus.FAILED);
       }
@@ -687,6 +727,60 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
 
       // No job should have been scheduled
       expect((session as any).startDelayedJob.scheduled).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 13. WA version resolution
+  // -----------------------------------------------------------------------
+  describe('WA version resolution', () => {
+    const {
+      fetchLatestBaileysVersion: mockFetch,
+    } = jest.requireMock('@adiwajshing/baileys');
+    const env = require('@waha/core/env');
+
+    afterEach(() => {
+      env.WAHA_WA_VERSION = null;
+      mockFetch.mockReset();
+    });
+
+    it('resolveWAVersion uses WAHA_WA_VERSION env var when set', async () => {
+      env.WAHA_WA_VERSION = '2,3000,9999999';
+      const version = await (session as any).resolveWAVersion();
+      expect(version).toEqual([2, 3000, 9999999]);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('resolveWAVersion fetches version on success', async () => {
+      mockFetch.mockResolvedValue({
+        version: [2, 3000, 1034386130] as any,
+        isLatest: true,
+      });
+      const version = await (session as any).resolveWAVersion();
+      expect(version).toEqual([2, 3000, 1034386130]);
+      expect(mockFetch).toHaveBeenCalled();
+    });
+
+    it('resolveWAVersion handles fetch timeout gracefully', async () => {
+      mockFetch.mockRejectedValue(new Error('AbortError: signal timed out'));
+      const version = await (session as any).resolveWAVersion();
+      expect(version).toBeUndefined();
+    });
+
+    it('resolveWAVersion returns undefined when fetch fails (Baileys default used)', async () => {
+      mockFetch.mockRejectedValue(new Error('network error'));
+      const version = await (session as any).resolveWAVersion();
+      expect(version).toBeUndefined();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 14. Default browser is Mac OS Chrome
+  // -----------------------------------------------------------------------
+  describe('default browser', () => {
+    it('default browser is Mac OS Chrome', () => {
+      const config = (session as any).getSocketConfig(undefined, {});
+      expect(config.browser).toEqual(['Mac OS', 'Chrome', '14.4.1']);
     });
   });
 });

@@ -5,6 +5,7 @@ import makeWASocket, {
   decryptPollVote,
   downloadMediaMessage,
   extractMessageContent,
+  fetchLatestBaileysVersion,
   generateMessageIDV2,
   getAggregateVotesInPollMessage,
   getContentType,
@@ -22,6 +23,7 @@ import makeWASocket, {
   WAMessageContent,
   WAMessageKey,
   WAMessageUpdate,
+  WAVersion,
 } from '@adiwajshing/baileys';
 import { WACallEvent } from '@adiwajshing/baileys/lib/Types/Call';
 import { BaileysEventMap } from '@adiwajshing/baileys/lib/Types/Events';
@@ -226,6 +228,7 @@ import { LocalStore } from '@waha/core/storage/LocalStore';
 import {
   WAHA_CLIENT_BROWSER_NAME,
   WAHA_CLIENT_DEVICE_NAME,
+  WAHA_WA_VERSION,
 } from '@waha/core/env';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const promiseRetry = require('promise-retry');
@@ -343,8 +346,8 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   }
 
   getSocketConfig(agents: Agents | undefined, state): Partial<SocketConfig> {
-    // Detect browser
-    let browser = ['Ubuntu', 'Chrome', '22.04.4'] as WABrowserDescription;
+    // Detect browser — default matches Platform.MACOS used in Baileys registration
+    let browser = Browsers.macOS('Chrome');
     let deviceName =
       this.sessionConfig?.client?.deviceName ?? WAHA_CLIENT_DEVICE_NAME;
     let browserName =
@@ -352,7 +355,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     if (browserName && !deviceName) {
       browser = Browsers.appropriate(browserName);
     } else if (!browserName && deviceName) {
-      browser = [deviceName, 'Chrome', '22.04.4'];
+      browser = [deviceName, 'Chrome', '14.4.1'];
     } else if (browserName && deviceName) {
       switch (deviceName) {
         case 'Mac OS':
@@ -369,7 +372,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
           browser = Browsers.windows(browserName);
           break;
         default:
-          browser = [deviceName, browserName, '22.04.4'];
+          browser = [deviceName, browserName, '14.4.1'];
       }
     }
 
@@ -399,6 +402,36 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     };
   }
 
+  /**
+   * Resolve the WhatsApp Web version to use for the socket connection.
+   * Priority: WAHA_WA_VERSION env > dynamic fetch > Baileys default (patched).
+   */
+  async resolveWAVersion(): Promise<WAVersion | undefined> {
+    if (WAHA_WA_VERSION) {
+      const parts = WAHA_WA_VERSION.split(',').map(Number);
+      if (parts.length === 3 && parts.every((n) => !isNaN(n))) {
+        this.logger.info(`Using WA version from env: ${parts}`);
+        return parts as unknown as WAVersion;
+      }
+      this.logger.warn(
+        `Invalid WAHA_WA_VERSION format: "${WAHA_WA_VERSION}", falling back to fetch`,
+      );
+    }
+
+    try {
+      const { version } = await fetchLatestBaileysVersion({
+        signal: AbortSignal.timeout(10_000),
+      });
+      this.logger.info(`Fetched latest WA version: ${version}`);
+      return version;
+    } catch (err) {
+      this.logger.warn(
+        `Failed to fetch WA version, using Baileys default: ${err}`,
+      );
+      return undefined;
+    }
+  }
+
   async makeSocket(): Promise<any> {
     if (!this.authNOWEBStore) {
       const store = await this.authFactory.buildAuth(
@@ -418,6 +451,12 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       agents,
       state,
     ) as SocketConfig;
+
+    const version = await this.resolveWAVersion();
+    if (version) {
+      socketConfig.version = version;
+    }
+
     const sock = makeWASocket(socketConfig);
     sock.ev.on('creds.update', saveCreds);
     return sock;
@@ -661,8 +700,13 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     if (!hasEstablishedAuth) {
       this.logger.warn(
         { statusCode },
-        `Permanent code ${statusCode} during registration (no paired auth) — retrying`,
+        `Permanent code ${statusCode} during registration (no paired auth) — retrying with fresh keys`,
       );
+      // Close and discard the current auth store so makeSocket() generates
+      // fresh signal/registration keys on the next attempt. Without this,
+      // the same rejected keys are reused on every retry.
+      await this.authNOWEBStore?.close?.();
+      this.authNOWEBStore = null;
       this.restartClient();
       return;
     }
