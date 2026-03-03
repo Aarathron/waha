@@ -4,7 +4,13 @@ import { EventEmitter } from 'events';
 jest.mock('@adiwajshing/baileys', () => ({
   __esModule: true,
   default: jest.fn(), // makeWASocket
-  Browsers: { appropriate: jest.fn(), macOS: jest.fn(), ubuntu: jest.fn(), windows: jest.fn() },
+  Browsers: {
+    appropriate: jest.fn(),
+    macOS: jest.fn().mockReturnValue(['Mac OS', 'Chrome', '14.4.1']),
+    ubuntu: jest.fn(),
+    windows: jest.fn(),
+  },
+  fetchLatestBaileysVersion: jest.fn(),
   makeCacheableSignalKeyStore: jest.fn((keys) => keys),
   proto: { Message: { create: jest.fn() } },
   normalizeMessageContent: jest.fn(),
@@ -721,6 +727,60 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
 
       // No job should have been scheduled
       expect((session as any).startDelayedJob.scheduled).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 13. WA version resolution
+  // -----------------------------------------------------------------------
+  describe('WA version resolution', () => {
+    const {
+      fetchLatestBaileysVersion: mockFetch,
+    } = jest.requireMock('@adiwajshing/baileys');
+    const env = require('@waha/core/env');
+
+    afterEach(() => {
+      env.WAHA_WA_VERSION = null;
+      mockFetch.mockReset();
+    });
+
+    it('resolveWAVersion uses WAHA_WA_VERSION env var when set', async () => {
+      env.WAHA_WA_VERSION = '2,3000,9999999';
+      const version = await (session as any).resolveWAVersion();
+      expect(version).toEqual([2, 3000, 9999999]);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('resolveWAVersion fetches version on success', async () => {
+      mockFetch.mockResolvedValue({
+        version: [2, 3000, 1034386130] as any,
+        isLatest: true,
+      });
+      const version = await (session as any).resolveWAVersion();
+      expect(version).toEqual([2, 3000, 1034386130]);
+      expect(mockFetch).toHaveBeenCalled();
+    });
+
+    it('resolveWAVersion handles fetch timeout gracefully', async () => {
+      mockFetch.mockRejectedValue(new Error('AbortError: signal timed out'));
+      const version = await (session as any).resolveWAVersion();
+      expect(version).toBeUndefined();
+    });
+
+    it('resolveWAVersion returns undefined when fetch fails (Baileys default used)', async () => {
+      mockFetch.mockRejectedValue(new Error('network error'));
+      const version = await (session as any).resolveWAVersion();
+      expect(version).toBeUndefined();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 14. Default browser is Mac OS Chrome
+  // -----------------------------------------------------------------------
+  describe('default browser', () => {
+    it('default browser is Mac OS Chrome', () => {
+      const config = (session as any).getSocketConfig(undefined, {});
+      expect(config.browser).toEqual(['Mac OS', 'Chrome', '14.4.1']);
     });
   });
 });

@@ -32,6 +32,11 @@ export const WAHA_CLIENT_BROWSER_NAME =
   process.env.WAHA_CLIENT_BROWSER_NAME || null;
 
 //
+// WhatsApp Web version override (format: "2,3000,1034386130")
+//
+export const WAHA_WA_VERSION = process.env.WAHA_WA_VERSION || null;
+
+//
 // Interactive messages (buttons/lists) wrapper type
 // Options: viewOnceMessage, viewOnceMessageV2, viewOnceMessageV2Extension, botInvokeMessage, direct
 // Default: viewOnceMessageV2 (experimental - trying to find what works)
