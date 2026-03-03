@@ -253,6 +253,11 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
       'status %d: cleans auth, sets guard flag, schedules restart',
       async (statusCode) => {
         session.status = WAHASessionStatus.WORKING;
+        // Simulate established auth so we test the guard-flag path
+        (session as any).authNOWEBStore = {
+          state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+          close: jest.fn(),
+        };
         expect((session as any).startDelayedJob.scheduled).toBe(false);
 
         await emitConnectionUpdate(session, {
@@ -276,6 +281,11 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   describe('PERMANENT disconnect — guard flag', () => {
     it('second permanent disconnect sets FAILED, stops restart, and stops auto-restart job', async () => {
       session.status = WAHASessionStatus.WORKING;
+      // Simulate established auth so we test the guard-flag path
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
       const autoRestartStopSpy = jest.spyOn(
         (session as any).autoRestartJob,
         'stop',
@@ -300,6 +310,11 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
 
     it('auth cleanup failure sets FAILED immediately', async () => {
       session.status = WAHASessionStatus.WORKING;
+      // Simulate established auth so we test the cleanup-failure path
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
       (session as any).cleanupAuthOnLogout = jest
         .fn()
         .mockResolvedValue(false);
@@ -315,6 +330,11 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
 
     it('end()/store.close() errors are caught (no unhandled rejections)', async () => {
       session.status = WAHASessionStatus.WORKING;
+      // Simulate established auth so we test the guard-flag FAILED path
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
       (session as any).permanentRestartAttempted = true;
       const endMock = jest
         .fn()
@@ -337,6 +357,73 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
       // Verify the operations were actually attempted
       expect(endMock).toHaveBeenCalled();
       expect(storeCloseMock).toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 4b. PERMANENT disconnect — no established auth (registration rejection)
+  // -----------------------------------------------------------------------
+  describe('PERMANENT disconnect — no established auth', () => {
+    it('405 with no paired auth retries without setting guard flag', async () => {
+      session.status = WAHASessionStatus.STARTING;
+      // No authNOWEBStore set — simulates brand new session
+      expect((session as any).startDelayedJob.scheduled).toBe(false);
+
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(405),
+      });
+
+      // Should retry via restartClient
+      expect((session as any).startDelayedJob.scheduled).toBe(true);
+      // Guard flag should NOT be set
+      expect((session as any).permanentRestartAttempted).toBe(false);
+      // Should NOT have called cleanupAuthOnLogout (early return)
+      expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
+      // Status should NOT be FAILED
+      expect(session.status).not.toBe(WAHASessionStatus.FAILED);
+    });
+
+    it('multiple 405s with no auth keep retrying (never FAILED)', async () => {
+      session.status = WAHASessionStatus.STARTING;
+
+      for (let i = 0; i < 5; i++) {
+        // Reset the delayed job to allow re-scheduling
+        (session as any).startDelayedJob.cancel();
+
+        await emitConnectionUpdate(session, {
+          connection: 'close',
+          lastDisconnect: makeDisconnect(405),
+        });
+
+        expect((session as any).permanentRestartAttempted).toBe(false);
+        expect((session as any).startDelayedJob.scheduled).toBe(true);
+        expect(session.status).not.toBe(WAHASessionStatus.FAILED);
+      }
+    });
+
+    it('405 with established auth uses guard flag (existing behavior)', async () => {
+      session.status = WAHASessionStatus.WORKING;
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
+
+      // First 405 — should clean auth, set guard, restart
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(405),
+      });
+      expect((session as any).permanentRestartAttempted).toBe(true);
+      expect((session as any).cleanupAuthOnLogout).toHaveBeenCalled();
+      expect((session as any).startDelayedJob.scheduled).toBe(true);
+
+      // Second 405 — guard flag blocks, sets FAILED
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(405),
+      });
+      expect(session.status).toBe(WAHASessionStatus.FAILED);
     });
   });
 
@@ -402,6 +489,11 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   describe('safety net', () => {
     it('same transient code 3x upgrades to PERMANENT handling', async () => {
       session.status = WAHASessionStatus.WORKING;
+      // Simulate established auth so the upgrade triggers full PERMANENT path
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
 
       // Need to reset the delayed job between events so restartClient
       // can schedule again (simulating the timer firing between events)

@@ -653,6 +653,20 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     statusCode: number | undefined,
     lastDisconnect: any,
   ) {
+    // If the session has never paired (no creds.me), this is a registration/
+    // pairing rejection (e.g. 405 during initial handshake), not stale auth.
+    // Retry without setting the guard flag — the statusTracker.isStuckInStarting()
+    // safety net (60 cycles) prevents infinite loops.
+    const hasEstablishedAuth = !!this.authNOWEBStore?.state?.creds?.me;
+    if (!hasEstablishedAuth) {
+      this.logger.warn(
+        { statusCode },
+        `Permanent code ${statusCode} during registration (no paired auth) — retrying`,
+      );
+      this.restartClient();
+      return;
+    }
+
     this.logger.error(
       { statusCode, error: lastDisconnect?.error?.message },
       `Permanent disconnect (status ${statusCode}): '${lastDisconnect?.error?.message}'. ` +
