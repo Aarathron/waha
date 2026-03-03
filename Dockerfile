@@ -15,6 +15,7 @@ WORKDIR /git
 COPY package.json .
 COPY yarn.lock .
 COPY .yarnrc.yml .
+COPY scripts/patch-baileys.js scripts/
 ENV YARN_CHECKSUM_BEHAVIOR=update
 
 RUN npm install -g corepack && corepack enable
