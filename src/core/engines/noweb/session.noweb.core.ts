@@ -553,15 +553,16 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
   private enablePresenceKeepAlive() {
     this.presenceKeepAliveJob.start(async () => {
-      if (this.status !== WAHASessionStatus.WORKING) {
-        this.logger.debug('Presence keep-alive skipped, session not WORKING.');
+      if (this.status !== WAHASessionStatus.WORKING || !this.sock) {
         return;
       }
       try {
-        await this.sock?.sendPresenceUpdate('available');
+        await this.sock.sendPresenceUpdate('available');
         this.logger.debug('Presence keep-alive sent: available');
       } catch (err) {
-        this.logger.warn(`Presence keep-alive failed: ${err?.message ?? err}`);
+        this.logger.warn(
+          `Presence keep-alive failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     });
   }
@@ -742,7 +743,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     // The 428→401 cascade is a well-known Baileys false-positive; a single retry
     // with the same creds often recovers the session.
     if (statusCode === 401) {
-      if (this.logoutRetryCount === 0) {
+      if (this.logoutRetryCount === 0 && this.shouldRestart) {
         this.logoutRetryCount = 1;
         this.logger.warn(
           { statusCode },
@@ -754,7 +755,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
       this.logger.error(
         { statusCode },
-        'Received 401 (loggedOut) again after retry. Genuine logout, wiping auth state.',
+        'Received 401 (loggedOut) after retry. Genuine logout, wiping auth state.',
       );
       this.logoutRetryCount = 0;
     }
