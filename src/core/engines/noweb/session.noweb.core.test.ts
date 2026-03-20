@@ -255,7 +255,7 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   // 3. PERMANENT disconnect — first occurrence
   // -----------------------------------------------------------------------
   describe('PERMANENT disconnect — first occurrence', () => {
-    it.each([401, 403, 405])(
+    it.each([403, 405])(
       'status %d: cleans auth, sets guard flag, schedules restart',
       async (statusCode) => {
         session.status = WAHASessionStatus.WORKING;
@@ -279,6 +279,69 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
         expect((session as any).startDelayedJob.scheduled).toBe(true);
       },
     );
+
+    it('status 401: retries once with existing creds before wiping', async () => {
+      session.status = WAHASessionStatus.WORKING;
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
+      expect((session as any).startDelayedJob.scheduled).toBe(false);
+
+      // First 401 — should retry, NOT wipe
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(401),
+      });
+
+      expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
+      expect((session as any).logoutRetryCount).toBe(1);
+      expect((session as any).startDelayedJob.scheduled).toBe(true);
+    });
+
+    it('status 401: second 401 within retry window wipes auth', async () => {
+      session.status = WAHASessionStatus.WORKING;
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
+
+      // First 401 — retry
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(401),
+      });
+      expect((session as any).logoutRetryCount).toBe(1);
+
+      // Second 401 — genuine logout, wipe
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(401),
+      });
+
+      expect((session as any).cleanupAuthOnLogout).toHaveBeenCalled();
+      expect((session as any).logoutRetryCount).toBe(0);
+    });
+
+    it('status 401: retry counter resets on successful connection', async () => {
+      session.status = WAHASessionStatus.WORKING;
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
+
+      // First 401 — retry
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(401),
+      });
+      expect((session as any).logoutRetryCount).toBe(1);
+
+      // Connection opens — reset
+      await emitConnectionUpdate(session, { connection: 'open' });
+      expect((session as any).logoutRetryCount).toBe(0);
+      expect((session as any).lastLogoutTimestamp).toBe(0);
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -297,17 +360,17 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
         'stop',
       );
 
-      // First permanent disconnect — should restart
+      // First permanent disconnect (403) — should restart
       await emitConnectionUpdate(session, {
         connection: 'close',
-        lastDisconnect: makeDisconnect(401),
+        lastDisconnect: makeDisconnect(403),
       });
       expect((session as any).permanentRestartAttempted).toBe(true);
 
       // Second permanent disconnect — guard blocks restart
       await emitConnectionUpdate(session, {
         connection: 'close',
-        lastDisconnect: makeDisconnect(401),
+        lastDisconnect: makeDisconnect(403),
       });
       expect(session.status).toBe(WAHASessionStatus.FAILED);
       expect((session as any).shouldRestart).toBe(false);
@@ -327,7 +390,7 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
 
       await emitConnectionUpdate(session, {
         connection: 'close',
-        lastDisconnect: makeDisconnect(401),
+        lastDisconnect: makeDisconnect(403),
       });
 
       expect(session.status).toBe(WAHASessionStatus.FAILED);
