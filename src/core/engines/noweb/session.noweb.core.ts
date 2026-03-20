@@ -264,6 +264,9 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   private permanentRestartAttempted: boolean = false;
 
   private autoRestartJob: SinglePeriodicJobRunner;
+  private presenceKeepAliveJob: SinglePeriodicJobRunner;
+  private readonly PRESENCE_KEEP_ALIVE_INTERVAL_SECONDS = 5 * 60;
+  private logoutRetryCount: number = 0;
   private msgRetryCounterCache: NodeCache;
   private placeholderResendCache: NodeCache;
   protected engineLogger: ILogger;
@@ -316,6 +319,13 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       'auto-restart',
       delay * SECOND,
       this.logger,
+    );
+    this.presenceKeepAliveJob = new SinglePeriodicJobRunner(
+      'presence-keep-alive',
+      this.PRESENCE_KEEP_ALIVE_INTERVAL_SECONDS * SECOND,
+      this.logger,
+      false,
+      false,
     );
     this.authNOWEBStore = null;
   }
@@ -526,17 +536,45 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     this.listenConnectionEvents();
     this.subscribeEngineEvents2();
     this.listenContactsUpdatePictureProfile();
-    // this.enableAutoRestart();
+    this.enableAutoRestart();
+    this.enablePresenceKeepAlive();
   }
 
   private enableAutoRestart() {
     this.autoRestartJob.start(async () => {
-      this.logger.info('Auto-restarting the client connection...');
+      if (this.status === WAHASessionStatus.SCAN_QR_CODE) {
+        this.logger.debug('Auto-restart skipped, waiting for QR scan.');
+        return;
+      }
       if (this.sock?.ws?.isConnecting) {
         this.logger.warn('Auto-restart skipped, the client is connecting...');
         return;
       }
+      this.logger.info('Auto-restarting the client connection...');
       this.sock?.end(undefined);
+    });
+  }
+
+  private enablePresenceKeepAlive() {
+    const markOnline = this.sessionConfig?.noweb?.markOnline ?? true;
+    if (!markOnline) {
+      this.logger.info(
+        'Presence keep-alive disabled: markOnline is false.',
+      );
+      return;
+    }
+    this.presenceKeepAliveJob.start(async () => {
+      if (this.status !== WAHASessionStatus.WORKING || !this.sock) {
+        return;
+      }
+      try {
+        await this.sock.sendPresenceUpdate('available');
+        this.logger.debug('Presence keep-alive sent: available');
+      } catch (err) {
+        this.logger.warn(
+          `Presence keep-alive failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     });
   }
 
@@ -586,6 +624,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
         } else if (connection === 'open') {
           this.qr.save('');
           this.permanentRestartAttempted = false;
+          this.logoutRetryCount = 0;
           this.status = WAHASessionStatus.WORKING;
           return;
         } else if (connection === 'close') {
@@ -711,6 +750,27 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       return;
     }
 
+    // For 401 (loggedOut), retry once with existing credentials before wiping.
+    // The 428→401 cascade is a well-known Baileys false-positive; a single retry
+    // with the same creds often recovers the session.
+    if (statusCode === 401) {
+      if (this.logoutRetryCount === 0 && this.shouldRestart) {
+        this.logoutRetryCount = 1;
+        this.logger.warn(
+          { statusCode },
+          'Received 401 (loggedOut), retrying once with existing credentials before wiping auth state...',
+        );
+        this.restartClient();
+        return;
+      }
+
+      this.logger.error(
+        { statusCode },
+        'Received 401 (loggedOut) after retry. Genuine logout, wiping auth state.',
+      );
+      this.logoutRetryCount = 0;
+    }
+
     this.logger.error(
       { statusCode, error: lastDisconnect?.error?.message },
       `Permanent disconnect (status ${statusCode}): '${lastDisconnect?.error?.message}'. ` +
@@ -744,6 +804,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     this.shouldRestart = false;
     this.startDelayedJob.cancel();
     this.autoRestartJob.stop();
+    this.presenceKeepAliveJob.stop();
     this.status = WAHASessionStatus.FAILED;
 
     try {
@@ -769,6 +830,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     this.shouldRestart = false;
     this.startDelayedJob.cancel();
     this.autoRestartJob.stop();
+    this.presenceKeepAliveJob.stop();
 
     const hasCreds = this.authNOWEBStore?.state?.creds;
     if (hasCreds && this.status == WAHASessionStatus.WORKING) {
@@ -795,6 +857,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     this.shouldRestart = false;
     this.startDelayedJob.cancel();
     this.autoRestartJob.stop();
+    this.presenceKeepAliveJob.stop();
 
     // We'll restart the client if it's in the process of unpairing
     this.status = WAHASessionStatus.FAILED;
@@ -1021,6 +1084,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     this.cleanupPresenceTimeout();
     this.presence = null;
     this.autoRestartJob.stop();
+    this.presenceKeepAliveJob.stop();
     // @ts-ignore
     this.sock?.ev?.removeAllListeners();
     this.sock?.ws?.removeAllListeners();
