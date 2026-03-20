@@ -265,7 +265,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
   private autoRestartJob: SinglePeriodicJobRunner;
   private presenceKeepAliveJob: SinglePeriodicJobRunner;
-  private PRESENCE_KEEP_ALIVE_INTERVAL_SECONDS = 5 * 60;
+  private readonly PRESENCE_KEEP_ALIVE_INTERVAL_SECONDS = 5 * 60;
   private logoutRetryCount: number = 0;
   private msgRetryCounterCache: NodeCache;
   private placeholderResendCache: NodeCache;
@@ -542,16 +542,27 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
   private enableAutoRestart() {
     this.autoRestartJob.start(async () => {
-      this.logger.info('Auto-restarting the client connection...');
+      if (this.status === WAHASessionStatus.SCAN_QR_CODE) {
+        this.logger.debug('Auto-restart skipped, waiting for QR scan.');
+        return;
+      }
       if (this.sock?.ws?.isConnecting) {
         this.logger.warn('Auto-restart skipped, the client is connecting...');
         return;
       }
+      this.logger.info('Auto-restarting the client connection...');
       this.sock?.end(undefined);
     });
   }
 
   private enablePresenceKeepAlive() {
+    const markOnline = this.sessionConfig?.noweb?.markOnline ?? true;
+    if (!markOnline) {
+      this.logger.info(
+        'Presence keep-alive disabled: markOnline is false.',
+      );
+      return;
+    }
     this.presenceKeepAliveJob.start(async () => {
       if (this.status !== WAHASessionStatus.WORKING || !this.sock) {
         return;
