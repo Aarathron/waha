@@ -211,6 +211,7 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   afterEach(() => {
     (session as any).startDelayedJob.cancel();
     (session as any).autoRestartJob?.stop();
+    (session as any).presenceKeepAliveJob?.stop();
     jest.useRealTimers();
   });
 
@@ -296,10 +297,11 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
 
       expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
       expect((session as any).logoutRetryCount).toBe(1);
+      expect((session as any).permanentRestartAttempted).toBe(false);
       expect((session as any).startDelayedJob.scheduled).toBe(true);
     });
 
-    it('status 401: second 401 within retry window wipes auth', async () => {
+    it('status 401: second 401 after retry wipes auth', async () => {
       session.status = WAHASessionStatus.WORKING;
       (session as any).authNOWEBStore = {
         state: { creds: { me: { id: '123@s.whatsapp.net' } } },
@@ -340,7 +342,6 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
       // Connection opens — reset
       await emitConnectionUpdate(session, { connection: 'open' });
       expect((session as any).logoutRetryCount).toBe(0);
-      expect((session as any).lastLogoutTimestamp).toBe(0);
     });
   });
 
