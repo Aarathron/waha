@@ -1,6 +1,7 @@
 import { DataStore } from '../../abc/DataStore';
 import { LocalStore } from '../../storage/LocalStore';
-import { useMultiFileAuthState } from './useMultiFileAuthState';
+import { LocalStoreCore } from '../../storage/LocalStoreCore';
+import { useSQLiteAuthState } from './useSQLiteAuthState';
 
 export class NowebAuthFactoryCore {
   buildAuth(store: DataStore, name: string) {
@@ -11,7 +12,10 @@ export class NowebAuthFactoryCore {
   protected async buildLocalAuth(store: LocalStore, name: string) {
     await store.init(name);
     const authFolder = store.getSessionDirectory(name);
-    const { state, saveCreds, close } = await useMultiFileAuthState(authFolder);
+    const knex = (store as LocalStoreCore).getWAHADatabase();
+    const { state, saveCreds, close } = await useSQLiteAuthState(knex, name, {
+      migrateFromFolder: authFolder,
+    });
     return { state, saveCreds, close };
   }
 }

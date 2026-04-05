@@ -403,7 +403,9 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       logger: this.engineLogger,
       mobile: false,
       defaultQueryTimeoutMs: 120_000,
-      keepAliveIntervalMs: 30_000,
+      keepAliveIntervalMs: 15_000,
+      connectTimeoutMs: 30_000,
+      retryRequestDelayMs: 2_000,
       getMessage: (key) => this.getMessage(key),
       syncFullHistory: fullSyncEnabled,
       msgRetryCounterCache: this.msgRetryCounterCache,
@@ -468,7 +470,16 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     }
 
     const sock = makeWASocket(socketConfig);
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', async () => {
+      try {
+        await saveCreds();
+      } catch (err: any) {
+        this.logger.error(
+          { err: err?.message, stack: err?.stack },
+          'CRITICAL: Failed to save credentials — session may be at risk of losing auth state',
+        );
+      }
+    });
     return sock;
   }
 
@@ -575,7 +586,30 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
           `Presence keep-alive failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+      this.checkPreKeyHealth();
     });
+  }
+
+  private checkPreKeyHealth() {
+    const creds = this.authNOWEBStore?.state?.creds;
+    if (!creds) return;
+
+    const nextPreKeyId = creds.nextPreKeyId ?? 0;
+    const firstUnuploadedPreKeyId = creds.firstUnuploadedPreKeyId ?? 0;
+    const available = nextPreKeyId - firstUnuploadedPreKeyId;
+
+    if (available < 10) {
+      this.logger.error(
+        { nextPreKeyId, firstUnuploadedPreKeyId, available },
+        'Pre-key count critically low — forcing reconnect to trigger Baileys pre-key upload',
+      );
+      this.sock?.ws?.close();
+    } else if (available < 50) {
+      this.logger.warn(
+        { nextPreKeyId, firstUnuploadedPreKeyId, available },
+        'Pre-key count low — Baileys should replenish on next reconnect',
+      );
+    }
   }
 
   protected async getMessage(
