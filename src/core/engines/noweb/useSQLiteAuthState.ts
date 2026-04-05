@@ -72,6 +72,10 @@ async function ensureTables(knex: Knex.Knex): Promise<void> {
       data TEXT NOT NULL
     )
   `);
+  await knex.raw(`
+    CREATE INDEX IF NOT EXISTS "idx_noweb_auth_backup_session_time"
+    ON "${AUTH_BACKUP_TABLE}" (session, snapshot_time)
+  `);
 }
 
 async function readRow(
@@ -359,6 +363,7 @@ export const useSQLiteAuthState = async (
 ): Promise<{
   state: AuthenticationState;
   saveCreds: () => Promise<void>;
+  clear: () => Promise<void>;
   close: () => Promise<void>;
 }> => {
   const log = opts?.logger;
@@ -465,6 +470,10 @@ export const useSQLiteAuthState = async (
     },
     saveCreds: async () => {
       await writeRow(knex, session, CREDS_CATEGORY, CREDS_ID, creds);
+    },
+    clear: async () => {
+      await knex(AUTH_STATE_TABLE).where({ session }).delete();
+      await knex(AUTH_BACKUP_TABLE).where({ session }).delete();
     },
     close: async () => {
       if (backupTimer) {

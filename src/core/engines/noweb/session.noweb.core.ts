@@ -858,7 +858,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     this.mediaManager.close();
     await this.end();
     await this.store?.close();
-    this.authNOWEBStore?.close().catch((err) => {
+    await this.authNOWEBStore?.close().catch((err) => {
       this.logger.error('Failed to close NOWEB auth store');
       this.logger.error(err, err.stack);
     });
@@ -880,7 +880,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
     await this.end();
     await this.store?.close();
-    this.authNOWEBStore?.close().catch((err) => {
+    await this.authNOWEBStore?.close().catch((err) => {
       this.logger.error('Failed to close NOWEB auth store in failed()');
       this.logger.error(err, err.stack);
     });
@@ -893,7 +893,9 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
    */
   private async cleanupAuthOnLogout(): Promise<boolean> {
     try {
-      // Close the in-memory auth store
+      // Clear SQLite auth state so the next startup generates a fresh QR
+      await this.authNOWEBStore?.clear?.();
+      // Close the in-memory auth store (cancels backup timer)
       await this.authNOWEBStore?.close?.();
       this.authNOWEBStore = null;
 
