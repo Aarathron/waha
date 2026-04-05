@@ -54,7 +54,12 @@ function parse(raw: string): any {
   return JSON.parse(raw, esm.b.BufferJSON.reviver);
 }
 
+// Tracks which Knex instances have already had tables created so session
+// restarts don't pay 3 DDL round-trips every time.
+const _tablesEnsured = new WeakSet<Knex.Knex>();
+
 async function ensureTables(knex: Knex.Knex): Promise<void> {
+  if (_tablesEnsured.has(knex)) return;
   await knex.raw(`
     CREATE TABLE IF NOT EXISTS "${AUTH_STATE_TABLE}" (
       session TEXT NOT NULL,
@@ -76,6 +81,7 @@ async function ensureTables(knex: Knex.Knex): Promise<void> {
     CREATE INDEX IF NOT EXISTS "idx_noweb_auth_backup_session_time"
     ON "${AUTH_BACKUP_TABLE}" (session, snapshot_time)
   `);
+  _tablesEnsured.add(knex);
 }
 
 async function readRow(
@@ -173,7 +179,7 @@ export async function migrateFromFiles(
     .where({ session })
     .count({ count: '*' })
     .first();
-  if (existing && parseInt(String(existing.count), 10) > 0) return;
+  if (Number(existing?.count) > 0) return;
 
   const files = await readdir(folder).catch(() => [] as string[]);
   const jsonFiles = files.filter((f) => f.endsWith('.json'));
@@ -183,7 +189,7 @@ export async function migrateFromFiles(
     `Migrating ${jsonFiles.length} auth files from ${folder} to SQLite for session '${session}'`,
   );
 
-  const rows: Array<{ session: string; category: string; id: string; data: string }> = [];
+  const rows: Array<{ session: string; category: string; id: string; data: any }> = [];
 
   for (const file of jsonFiles) {
     if (file === 'creds.json') {
@@ -199,7 +205,7 @@ export async function migrateFromFiles(
         );
         return;
       }
-      rows.push({ session, category: CREDS_CATEGORY, id: CREDS_ID, data: stringify(data) });
+      rows.push({ session, category: CREDS_CATEGORY, id: CREDS_ID, data });
       continue;
     }
 
@@ -213,7 +219,7 @@ export async function migrateFromFiles(
         logger?.warn(`Skipping unrecognised auth file during migration: ${file}`);
         continue;
       }
-      rows.push({ session, category: decoded.category, id: decoded.id, data: stringify(data) });
+      rows.push({ session, category: decoded.category, id: decoded.id, data });
     } catch {
       logger?.warn(`Failed to read auth file during migration: ${file}`);
     }
@@ -235,12 +241,7 @@ export async function migrateFromFiles(
 
   await knex.transaction(async (trx) => {
     for (const row of rows) {
-      await trx.raw(
-        `INSERT INTO "${AUTH_STATE_TABLE}" (session, category, id, data)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(session, category, id) DO UPDATE SET data = excluded.data`,
-        [row.session, row.category, row.id, row.data],
-      );
+      await writeRow(trx, row.session, row.category, row.id, row.data);
     }
   });
 
@@ -317,16 +318,13 @@ async function snapshotCreds(
     data: stringify(creds),
   });
 
-  const oldest = await knex(AUTH_BACKUP_TABLE)
-    .where({ session })
-    .orderBy('snapshot_time', 'desc')
-    .offset(MAX_BACKUPS)
-    .select('id');
-
-  if (oldest.length > 0) {
-    const ids = oldest.map((r) => r.id);
-    await knex(AUTH_BACKUP_TABLE).whereIn('id', ids).delete();
-  }
+  // Delete backups beyond the MAX_BACKUPS most recent in a single round-trip
+  await knex.raw(
+    `DELETE FROM "${AUTH_BACKUP_TABLE}" WHERE session = ? AND id NOT IN (
+       SELECT id FROM "${AUTH_BACKUP_TABLE}" WHERE session = ? ORDER BY snapshot_time DESC LIMIT ?
+     )`,
+    [session, session, MAX_BACKUPS],
+  );
 }
 
 /**
@@ -445,12 +443,7 @@ export const useSQLiteAuthState = async (
                 for (const id in data[category]) {
                   const value = data[category][id];
                   if (value) {
-                    await trx.raw(
-                      `INSERT INTO "${AUTH_STATE_TABLE}" (session, category, id, data)
-                       VALUES (?, ?, ?, ?)
-                       ON CONFLICT(session, category, id) DO UPDATE SET data = excluded.data`,
-                      [session, category, id, stringify(value)],
-                    );
+                    await writeRow(trx, session, category, id, value);
                   } else {
                     await trx(AUTH_STATE_TABLE)
                       .where({ session, category, id })
