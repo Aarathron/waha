@@ -403,7 +403,9 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       logger: this.engineLogger,
       mobile: false,
       defaultQueryTimeoutMs: 120_000,
-      keepAliveIntervalMs: 30_000,
+      keepAliveIntervalMs: 15_000,
+      connectTimeoutMs: 30_000,
+      retryRequestDelayMs: 2_000,
       getMessage: (key) => this.getMessage(key),
       syncFullHistory: fullSyncEnabled,
       msgRetryCounterCache: this.msgRetryCounterCache,
@@ -468,7 +470,16 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     }
 
     const sock = makeWASocket(socketConfig);
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', async () => {
+      try {
+        await saveCreds();
+      } catch (err: any) {
+        this.logger.error(
+          { err: err?.message, stack: err?.stack },
+          'CRITICAL: Failed to save credentials — session may be at risk of losing auth state',
+        );
+      }
+    });
     return sock;
   }
 
@@ -847,7 +858,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     this.mediaManager.close();
     await this.end();
     await this.store?.close();
-    this.authNOWEBStore?.close().catch((err) => {
+    await this.authNOWEBStore?.close().catch((err) => {
       this.logger.error('Failed to close NOWEB auth store');
       this.logger.error(err, err.stack);
     });
@@ -869,6 +880,10 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
     await this.end();
     await this.store?.close();
+    await this.authNOWEBStore?.close().catch((err) => {
+      this.logger.error('Failed to close NOWEB auth store in failed()');
+      this.logger.error(err, err.stack);
+    });
   }
 
   /**
@@ -878,7 +893,9 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
    */
   private async cleanupAuthOnLogout(): Promise<boolean> {
     try {
-      // Close the in-memory auth store
+      // Clear SQLite auth state so the next startup generates a fresh QR
+      await this.authNOWEBStore?.clear?.();
+      // Close the in-memory auth store (cancels backup timer)
       await this.authNOWEBStore?.close?.();
       this.authNOWEBStore = null;
 
