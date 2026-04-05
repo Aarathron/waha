@@ -222,18 +222,23 @@ export async function migrateFromFiles(
     );
   }
 
-  if (rows.length > 0) {
-    await knex.transaction(async (trx) => {
-      for (const row of rows) {
-        await trx.raw(
-          `INSERT INTO "${AUTH_STATE_TABLE}" (session, category, id, data)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(session, category, id) DO UPDATE SET data = excluded.data`,
-          [row.session, row.category, row.id, row.data],
-        );
-      }
-    });
+  if (rows.length === 0) {
+    logger?.warn(
+      `Migration for session '${session}': no rows to insert, leaving source folder intact.`,
+    );
+    return;
   }
+
+  await knex.transaction(async (trx) => {
+    for (const row of rows) {
+      await trx.raw(
+        `INSERT INTO "${AUTH_STATE_TABLE}" (session, category, id, data)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(session, category, id) DO UPDATE SET data = excluded.data`,
+        [row.session, row.category, row.id, row.data],
+      );
+    }
+  });
 
   try {
     await rename(folder, `${folder}.migrated`);
