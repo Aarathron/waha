@@ -586,37 +586,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
           `Presence keep-alive failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
-      this.checkPreKeyHealth();
     });
-  }
-
-  private checkPreKeyHealth() {
-    const creds = this.authNOWEBStore?.state?.creds;
-    if (!creds) return;
-
-    const nextPreKeyId = creds.nextPreKeyId ?? 0;
-    const firstUnuploadedPreKeyId = creds.firstUnuploadedPreKeyId ?? 0;
-    const available = nextPreKeyId - firstUnuploadedPreKeyId;
-
-    if (available < 10) {
-      this.logger.error(
-        { nextPreKeyId, firstUnuploadedPreKeyId, available },
-        'Pre-key count critically low — forcing reconnect to trigger Baileys pre-key upload',
-      );
-      try {
-        this.sock?.ws?.close();
-      } catch (err: any) {
-        this.logger.warn(
-          { err: err?.message },
-          'Failed to close WebSocket during pre-key health reconnect',
-        );
-      }
-    } else if (available < 50) {
-      this.logger.warn(
-        { nextPreKeyId, firstUnuploadedPreKeyId, available },
-        'Pre-key count low — Baileys should replenish on next reconnect',
-      );
-    }
   }
 
   protected async getMessage(

@@ -18,8 +18,7 @@ const BACKUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 /**
  * All Baileys key type names, longest-prefix-first so startsWith matching is unambiguous.
- * The '/' in "pre-key" etc. refers to the key type used in keys.get/set — these are
- * exactly the strings Baileys passes as the `type` argument.
+ * These are exactly the strings Baileys passes as the `type` argument to keys.get/set.
  */
 const KNOWN_KEY_TYPES = [
   'app-state-sync-key',
@@ -36,6 +35,16 @@ const KNOWN_KEY_TYPES = [
  * Single dashes in JIDs (e.g. group IDs like "123456789-0@g.us") are left intact.
  */
 const DOUBLE_COLON_ID_TYPES = new Set(['sender-key', 'sender-key-memory']);
+
+/**
+ * Key types whose IDs use a single ':' before a numeric device suffix.
+ * Baileys session key IDs have the form "{jid}:{deviceId}" (e.g.
+ * "1234567890@s.whatsapp.net:0"). fixFileName encodes ':' as '-', producing
+ * "1234567890@s.whatsapp.net-0" on disk. We reverse this by replacing the
+ * trailing "-{digits}" back to ":{digits}".
+ * Phone/LID JIDs don't contain dashes, so this reversal is unambiguous.
+ */
+const DEVICE_SUFFIX_ID_TYPES = new Set(['session']);
 
 function stringify(data: any): string {
   return JSON.stringify(data, esm.b.BufferJSON.replacer);
@@ -116,11 +125,17 @@ function decodeAuthFilename(name: string): { category: string; id: string } | nu
     const prefix = type + '-';
     if (name.startsWith(prefix)) {
       let id = name.slice(prefix.length);
-      // Reverse '/' encoding (unambiguous)
+      // Reverse '/' encoding: '__' → '/' (unambiguous — type names never contain '__')
       id = id.replace(/__/g, '/');
-      // Reverse '::' encoding for key types that use double-colon separators
+      // Reverse '::' separator for sender-key types: '--' → '::'
+      // (single dashes in group JIDs like "123456789-0@g.us" are left intact)
       if (DOUBLE_COLON_ID_TYPES.has(type)) {
         id = id.replace(/--/g, '::');
+      }
+      // Reverse ':' device suffix for session keys: trailing '-{digits}' → ':{digits}'
+      // (phone/LID JIDs don't contain dashes, so this is unambiguous)
+      if (DEVICE_SUFFIX_ID_TYPES.has(type)) {
+        id = id.replace(/-(\d+)$/, ':$1');
       }
       return { category: type, id };
     }
