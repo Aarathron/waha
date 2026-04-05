@@ -603,7 +603,14 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
         { nextPreKeyId, firstUnuploadedPreKeyId, available },
         'Pre-key count critically low — forcing reconnect to trigger Baileys pre-key upload',
       );
-      this.sock?.ws?.close();
+      try {
+        this.sock?.ws?.close();
+      } catch (err: any) {
+        this.logger.warn(
+          { err: err?.message },
+          'Failed to close WebSocket during pre-key health reconnect',
+        );
+      }
     } else if (available < 50) {
       this.logger.warn(
         { nextPreKeyId, firstUnuploadedPreKeyId, available },
@@ -903,6 +910,10 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
     await this.end();
     await this.store?.close();
+    this.authNOWEBStore?.close().catch((err) => {
+      this.logger.error('Failed to close NOWEB auth store in failed()');
+      this.logger.error(err, err.stack);
+    });
   }
 
   /**

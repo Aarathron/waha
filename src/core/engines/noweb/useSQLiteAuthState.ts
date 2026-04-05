@@ -16,6 +16,27 @@ const CREDS_ID = 'creds';
 const MAX_BACKUPS = 5;
 const BACKUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
+/**
+ * All Baileys key type names, longest-prefix-first so startsWith matching is unambiguous.
+ * The '/' in "pre-key" etc. refers to the key type used in keys.get/set — these are
+ * exactly the strings Baileys passes as the `type` argument.
+ */
+const KNOWN_KEY_TYPES = [
+  'app-state-sync-key',
+  'app-state-sync-version',
+  'sender-key-memory',
+  'sender-key',
+  'pre-key',
+  'session',
+];
+
+/**
+ * Key types whose IDs use '::' as a separator (encoded as '--' by fixFileName).
+ * For these, we restore double-dashes to double-colons during migration.
+ * Single dashes in JIDs (e.g. group IDs like "123456789-0@g.us") are left intact.
+ */
+const DOUBLE_COLON_ID_TYPES = new Set(['sender-key', 'sender-key-memory']);
+
 function stringify(data: any): string {
   return JSON.stringify(data, esm.b.BufferJSON.replacer);
 }
@@ -73,19 +94,52 @@ async function writeRow(
   );
 }
 
-async function deleteRow(
-  knex: Knex.Knex,
-  session: string,
-  category: string,
-  id: string,
-): Promise<void> {
-  await knex(AUTH_STATE_TABLE).where({ session, category, id }).delete();
+/**
+ * Decode a filename (without extension) back to (category, id).
+ *
+ * Baileys' fixFileName encodes:
+ *   '/' in IDs  → '__'  (double underscore)
+ *   ':' in IDs  → '-'   (single dash)
+ *
+ * We reverse these transformations carefully:
+ * - Use KNOWN_KEY_TYPES to identify the category prefix unambiguously.
+ * - Reverse '__' → '/' in the id (unambiguous: the type names contain no '__').
+ * - For sender-key types only, reverse '--' → '::' in the id. These types use
+ *   '::' as a separator (e.g. "group@g.us::device::0"), and group JIDs may
+ *   contain a single '-' (e.g. "1234-5678@g.us") so a blanket '-'→':' reversal
+ *   would corrupt them.
+ *
+ * Returns null for unrecognised filenames.
+ */
+function decodeAuthFilename(name: string): { category: string; id: string } | null {
+  for (const type of KNOWN_KEY_TYPES) {
+    const prefix = type + '-';
+    if (name.startsWith(prefix)) {
+      let id = name.slice(prefix.length);
+      // Reverse '/' encoding (unambiguous)
+      id = id.replace(/__/g, '/');
+      // Reverse '::' encoding for key types that use double-colon separators
+      if (DOUBLE_COLON_ID_TYPES.has(type)) {
+        id = id.replace(/--/g, '::');
+      }
+      return { category: type, id };
+    }
+  }
+  return null;
 }
 
 /**
  * Migrate credentials from the legacy file-based auth folder into SQLite.
+ *
  * On success, renames the folder to "{folder}.migrated" as a backup.
- * Safe to call even if migration has already been done.
+ * Idempotent: skips silently if the session already has rows in SQLite.
+ *
+ * If creds.json is unreadable, migration is aborted entirely so the original
+ * folder is preserved for manual recovery. Non-critical key files that fail
+ * to parse are skipped with a warning.
+ *
+ * Note: if a previous migration was interrupted after partial writes, the
+ * remaining files will not be retried (the row-count guard fires early).
  */
 export async function migrateFromFiles(
   knex: Knex.Knex,
@@ -96,7 +150,6 @@ export async function migrateFromFiles(
   const folderStat = await stat(folder).catch(() => null);
   if (!folderStat?.isDirectory()) return;
 
-  // Check if there's already data in SQLite for this session
   const existing = await knex(AUTH_STATE_TABLE)
     .where({ session })
     .count({ count: '*' })
@@ -107,72 +160,54 @@ export async function migrateFromFiles(
   const jsonFiles = files.filter((f) => f.endsWith('.json'));
   if (jsonFiles.length === 0) return;
 
-  logger?.info(`Migrating ${jsonFiles.length} auth files from ${folder} to SQLite for session '${session}'`);
+  logger?.info(
+    `Migrating ${jsonFiles.length} auth files from ${folder} to SQLite for session '${session}'`,
+  );
 
   const rows: Array<{ session: string; category: string; id: string; data: string }> = [];
 
   for (const file of jsonFiles) {
+    if (file === 'creds.json') {
+      // creds.json is critical — abort the entire migration if it can't be read
+      // so the source folder is not renamed and can be recovered manually.
+      let data: any;
+      try {
+        const raw = await readFile(join(folder, file), 'utf-8');
+        data = JSON.parse(raw, esm.b.BufferJSON.reviver);
+      } catch (err: any) {
+        logger?.warn(
+          `creds.json is unreadable during migration for session '${session}': ${err?.message ?? String(err)}. Aborting migration to preserve source folder.`,
+        );
+        return;
+      }
+      rows.push({ session, category: CREDS_CATEGORY, id: CREDS_ID, data: stringify(data) });
+      continue;
+    }
+
+    // Non-critical key files — skip individually on failure
     try {
       const raw = await readFile(join(folder, file), 'utf-8');
       const data = JSON.parse(raw, esm.b.BufferJSON.reviver);
-
-      let category: string;
-      let id: string;
-
-      if (file === 'creds.json') {
-        category = CREDS_CATEGORY;
-        id = CREDS_ID;
-      } else {
-        // Files are named like "pre-key-123.json" or "app-state-sync-key-abc.json"
-        // Strip the .json extension, then split on the last dash to get type + id
-        const name = file.slice(0, -5); // remove ".json"
-        // The original fixFileName replaces "/" with "__" and ":" with "-"
-        // Reverse: replace "__" with "/" and the LAST occurrence pattern back
-        // Key format from Baileys: "{type}-{id}" where type can contain dashes
-        // We store as category = type, id = id
-        const underscoreIdx = name.indexOf('__');
-        if (underscoreIdx !== -1) {
-          category = name.slice(0, underscoreIdx).replace(/__/g, '/').replace(/-/g, ':');
-          id = name.slice(underscoreIdx + 2);
-        } else {
-          // Find last separator by known Baileys key types
-          const knownTypes = [
-            'pre-key',
-            'session',
-            'sender-key',
-            'sender-key-memory',
-            'app-state-sync-key',
-            'app-state-sync-version',
-          ];
-          let matched = false;
-          for (const type of knownTypes) {
-            if (name.startsWith(type + '-')) {
-              category = type;
-              id = name.slice(type.length + 1);
-              matched = true;
-              break;
-            }
-          }
-          if (!matched) {
-            logger?.warn(`Skipping unknown auth file during migration: ${file}`);
-            continue;
-          }
-        }
+      const name = file.slice(0, -5); // strip ".json"
+      const decoded = decodeAuthFilename(name);
+      if (!decoded) {
+        logger?.warn(`Skipping unrecognised auth file during migration: ${file}`);
+        continue;
       }
-
-      rows.push({
-        session,
-        category,
-        id,
-        data: stringify(data),
-      });
+      rows.push({ session, category: decoded.category, id: decoded.id, data: stringify(data) });
     } catch {
       logger?.warn(`Failed to read auth file during migration: ${file}`);
     }
   }
 
+  const skipped = jsonFiles.length - rows.length;
+  if (skipped > 0) {
+    logger?.warn(
+      `Migration for session '${session}': ${rows.length}/${jsonFiles.length} files migrated, ${skipped} skipped.`,
+    );
+  }
+
   if (rows.length > 0) {
-    // Insert all rows in a single transaction
     await knex.transaction(async (trx) => {
       for (const row of rows) {
         await trx.raw(
@@ -185,10 +220,11 @@ export async function migrateFromFiles(
     });
   }
 
-  // Rename old folder as backup
   try {
     await rename(folder, `${folder}.migrated`);
-    logger?.info(`Renamed auth folder to ${folder}.migrated after successful migration`);
+    logger?.info(
+      `Renamed auth folder to ${folder}.migrated — migration complete (${rows.length} entries).`,
+    );
   } catch {
     logger?.warn(`Could not rename auth folder ${folder} after migration`);
   }
@@ -196,7 +232,8 @@ export async function migrateFromFiles(
 
 /**
  * Validate that stored credentials are structurally sound.
- * Returns true if creds look valid for use.
+ * Checks the most session-critical fields; does not guarantee all
+ * Baileys-required fields (e.g. noiseKey, signedIdentityKey) are present.
  */
 export function validateCreds(creds: AuthenticationCreds | null): boolean {
   if (!creds) return false;
@@ -208,8 +245,8 @@ export function validateCreds(creds: AuthenticationCreds | null): boolean {
 }
 
 /**
- * Attempt to recover credentials from the backup table.
- * Returns the most recent valid backup, or null if none found.
+ * Scans up to MAX_BACKUPS most recent snapshots and returns the first that
+ * passes validateCreds, or null if none is found.
  */
 async function recoverFromBackup(
   knex: Knex.Knex,
@@ -231,16 +268,18 @@ async function recoverFromBackup(
         );
         return creds;
       }
-    } catch {
-      // corrupt backup, try next
+    } catch (err: any) {
+      logger?.warn(
+        `Backup entry id=${backup.id} snapshot_time=${backup.snapshot_time} for session '${session}' is corrupt (${err?.message ?? String(err)}), trying next`,
+      );
     }
   }
   return null;
 }
 
 /**
- * Take a credential snapshot into the backup table.
- * Keeps at most MAX_BACKUPS snapshots per session (rotating oldest).
+ * Snapshot current credentials into the backup table, keeping at most
+ * MAX_BACKUPS per session (oldest are rotated out).
  */
 async function snapshotCreds(
   knex: Knex.Knex,
@@ -254,7 +293,6 @@ async function snapshotCreds(
     data: stringify(creds),
   });
 
-  // Rotate: delete old snapshots beyond MAX_BACKUPS
   const oldest = await knex(AUTH_BACKUP_TABLE)
     .where({ session })
     .orderBy('snapshot_time', 'desc')
@@ -275,10 +313,16 @@ async function snapshotCreds(
  * credentials atomically, eliminating file-based race conditions.
  *
  * Features:
- * - ACID transactions: no partial credential writes
- * - Automatic migration from file-based auth (no QR re-scan required)
- * - Periodic credential backup with integrity validation
+ * - Atomic single-statement writes for credentials; transactional batch writes
+ *   for multi-key updates — no partial credential writes
+ * - Automatic migration from file-based auth on first run (no QR re-scan required)
+ * - Integrity check at startup with automatic recovery from the most recent valid backup
+ * - Periodic credential backup every 6 hours (rotating, last 5 snapshots retained)
  * - Same interface as useMultiFileAuthState
+ *
+ * close() cancels the backup timer only; the Knex connection lifecycle is
+ * managed externally by LocalStoreCore. Callers must invoke close() on all
+ * exit paths to prevent the timer from firing against a destroyed connection.
  */
 export const useSQLiteAuthState = async (
   knex: Knex.Knex,
@@ -301,21 +345,25 @@ export const useSQLiteAuthState = async (
 
   await ensureTables(knex);
 
-  // Migrate from file-based auth if needed
   if (opts?.migrateFromFolder) {
     await migrateFromFiles(knex, session, opts.migrateFromFolder, log);
   }
 
-  // Load credentials
-  let creds = await readRow(knex, session, CREDS_CATEGORY, CREDS_ID) as AuthenticationCreds | null;
+  let creds = (await readRow(
+    knex,
+    session,
+    CREDS_CATEGORY,
+    CREDS_ID,
+  )) as AuthenticationCreds | null;
 
   if (!validateCreds(creds)) {
     if (creds !== null) {
-      log?.warn(`Credentials for session '${session}' failed integrity check, attempting backup recovery`);
+      log?.warn(
+        `Credentials for session '${session}' failed integrity check, attempting backup recovery`,
+      );
       const recovered = await recoverFromBackup(knex, session, log);
       if (recovered) {
         creds = recovered;
-        // Persist the recovered creds immediately
         await writeRow(knex, session, CREDS_CATEGORY, CREDS_ID, creds);
       } else {
         log?.warn(`No valid backup found for session '${session}', starting fresh`);
@@ -324,17 +372,19 @@ export const useSQLiteAuthState = async (
     }
   }
 
-  // Fall back to fresh credentials (will trigger QR scan)
   if (!creds) {
     creds = esm.b.initAuthCreds();
   }
 
-  // Periodic credential backup
   let backupTimer: ReturnType<typeof setInterval> | null = setInterval(async () => {
     try {
       await snapshotCreds(knex, session, creds);
-    } catch {
-      // Non-fatal: backup failure should not affect session operation
+    } catch (err: any) {
+      // Non-fatal: a backup failure must not crash or interrupt session operation.
+      // Log so operators can detect if backups have permanently stopped (e.g. DB full).
+      log?.warn(
+        `Credential backup failed for session '${session}': ${err?.message ?? String(err)}`,
+      );
     }
   }, BACKUP_INTERVAL_MS);
 
@@ -346,36 +396,50 @@ export const useSQLiteAuthState = async (
           const data: Record<string, any> = {};
           await Promise.all(
             ids.map(async (id) => {
-              const value = await readRow(knex, session, type, id);
-              if (type === 'app-state-sync-key' && value) {
-                data[id] = esm.b.proto.Message.AppStateSyncKeyData.create(value);
-              } else {
-                data[id] = value;
+              try {
+                const value = await readRow(knex, session, type, id);
+                if (type === 'app-state-sync-key' && value) {
+                  data[id] = esm.b.proto.Message.AppStateSyncKeyData.create(value);
+                } else {
+                  data[id] = value;
+                }
+              } catch (err: any) {
+                log?.warn(
+                  `Failed to read auth key type='${type}' id='${id}' for session '${session}': ${err?.message ?? String(err)}`,
+                );
+                data[id] = null;
               }
             }),
           );
           return data;
         },
         set: async (data) => {
-          await knex.transaction(async (trx) => {
-            for (const category in data) {
-              for (const id in data[category]) {
-                const value = data[category][id];
-                if (value) {
-                  await trx.raw(
-                    `INSERT INTO "${AUTH_STATE_TABLE}" (session, category, id, data)
-                     VALUES (?, ?, ?, ?)
-                     ON CONFLICT(session, category, id) DO UPDATE SET data = excluded.data`,
-                    [session, category, id, stringify(value)],
-                  );
-                } else {
-                  await trx(AUTH_STATE_TABLE)
-                    .where({ session, category, id })
-                    .delete();
+          try {
+            await knex.transaction(async (trx) => {
+              for (const category in data) {
+                for (const id in data[category]) {
+                  const value = data[category][id];
+                  if (value) {
+                    await trx.raw(
+                      `INSERT INTO "${AUTH_STATE_TABLE}" (session, category, id, data)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(session, category, id) DO UPDATE SET data = excluded.data`,
+                      [session, category, id, stringify(value)],
+                    );
+                  } else {
+                    await trx(AUTH_STATE_TABLE)
+                      .where({ session, category, id })
+                      .delete();
+                  }
                 }
               }
-            }
-          });
+            });
+          } catch (err: any) {
+            log?.error(
+              `CRITICAL: Failed to write auth keys for session '${session}': ${err?.message ?? String(err)}. Encryption state may be inconsistent.`,
+            );
+            throw err;
+          }
         },
       },
     },

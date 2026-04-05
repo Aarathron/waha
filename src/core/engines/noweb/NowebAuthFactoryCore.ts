@@ -12,7 +12,12 @@ export class NowebAuthFactoryCore {
   protected async buildLocalAuth(store: LocalStore, name: string) {
     await store.init(name);
     const authFolder = store.getSessionDirectory(name);
-    const knex = (store as LocalStoreCore).getWAHADatabase();
+    if (!(store instanceof LocalStoreCore)) {
+      throw new Error(
+        `buildLocalAuth requires a LocalStoreCore instance but got '${store.constructor.name}'. SQLite auth state is not available for this store type.`,
+      );
+    }
+    const knex = store.getWAHADatabase();
     const { state, saveCreds, close } = await useSQLiteAuthState(knex, name, {
       migrateFromFolder: authFolder,
     });
