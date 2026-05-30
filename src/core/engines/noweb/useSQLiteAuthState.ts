@@ -7,8 +7,8 @@ import { join } from 'path';
 import type Knex from 'knex';
 import esm from '@waha/vendor/esm';
 
-const AUTH_STATE_TABLE = 'noweb_auth_state';
-const AUTH_BACKUP_TABLE = 'noweb_auth_backup';
+export const AUTH_STATE_TABLE = 'noweb_auth_state';
+export const AUTH_BACKUP_TABLE = 'noweb_auth_backup';
 
 const CREDS_CATEGORY = 'creds';
 const CREDS_ID = 'creds';

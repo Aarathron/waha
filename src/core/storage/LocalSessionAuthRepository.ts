@@ -3,6 +3,11 @@ const fs = require('fs-extra');
 
 import { ISessionAuthRepository } from './ISessionAuthRepository';
 import { LocalStore } from './LocalStore';
+import { LocalStoreCore } from './LocalStoreCore';
+import {
+  AUTH_STATE_TABLE,
+  AUTH_BACKUP_TABLE,
+} from '../engines/noweb/useSQLiteAuthState';
 // Keep all waha related files, ".waha.session.*"
 const KEEP_FILES = /^\.waha\.session\..*$/;
 
@@ -19,6 +24,13 @@ export class LocalSessionAuthRepository extends ISessionAuthRepository {
   }
 
   async clean(sessionName: string) {
+    // Clear SQLite auth rows so the next startup generates a fresh QR
+    if (this.store instanceof LocalStoreCore) {
+      const knex = this.store.getWAHADatabase();
+      await knex(AUTH_STATE_TABLE).where({ session: sessionName }).delete();
+      await knex(AUTH_BACKUP_TABLE).where({ session: sessionName }).delete();
+    }
+
     // Remove all files and directories recursively, but keep waha files
     const sessionDirectory = this.store.getSessionDirectory(sessionName);
     // Check it exists and it's directory
