@@ -893,6 +893,16 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
    */
   private async cleanupAuthOnLogout(): Promise<boolean> {
     try {
+      // A store without clear() would silently keep stale SQLite credentials,
+      // resurrecting them on every restart — fail loudly instead.
+      if (
+        this.authNOWEBStore &&
+        typeof this.authNOWEBStore.clear !== 'function'
+      ) {
+        throw new Error(
+          'Auth store does not implement clear() — cannot wipe stale SQLite credentials',
+        );
+      }
       // Clear SQLite auth state so the next startup generates a fresh QR
       await this.authNOWEBStore?.clear?.();
       // Close the in-memory auth store (cancels backup timer)

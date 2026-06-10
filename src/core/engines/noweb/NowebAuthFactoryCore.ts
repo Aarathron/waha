@@ -18,9 +18,13 @@ export class NowebAuthFactoryCore {
       );
     }
     const knex = store.getWAHADatabase();
-    const { state, saveCreds, close } = await useSQLiteAuthState(knex, name, {
-      migrateFromFolder: authFolder,
-    });
-    return { state, saveCreds, close };
+    const { state, saveCreds, clear, close } = await useSQLiteAuthState(
+      knex,
+      name,
+      {
+        migrateFromFolder: authFolder,
+      },
+    );
+    return { state, saveCreds, clear, close };
   }
 }
