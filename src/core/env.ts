@@ -37,6 +37,16 @@ export const WAHA_CLIENT_BROWSER_NAME =
 export const WAHA_WA_VERSION = process.env.WAHA_WA_VERSION || null;
 
 //
+// NOWEB periodic forced-restart interval (minutes).
+// 0 = disabled (default, recommended). A real WhatsApp companion device holds a
+// persistent connection; tearing it down on a timer is bot-like connection churn
+// and does NOT improve longevity. Upstream WAHA added a 30-min restart, then
+// removed it (restart only on socket error). Set >0 only as a last-resort crutch.
+//
+export const WAHA_NOWEB_AUTO_RESTART_MINUTES =
+  parseInt(process.env.WAHA_NOWEB_AUTO_RESTART_MINUTES) || 0;
+
+//
 // Interactive messages (buttons/lists) wrapper type
 // Options: viewOnceMessage, viewOnceMessageV2, viewOnceMessageV2Extension, botInvokeMessage, direct
 // Default: viewOnceMessageV2 (experimental - trying to find what works)

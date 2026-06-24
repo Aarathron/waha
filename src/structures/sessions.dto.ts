@@ -106,10 +106,14 @@ export class NowebConfig {
   store?: NowebStoreConfig;
 
   @ApiProperty({
-    description: 'Mark the session as online when it connects to the server.',
+    description:
+      'Mark the session as online when it connects to the server. ' +
+      'Default false: keeping a companion device perpetually "online" is a ' +
+      'bot-like signal and suppresses notifications on the primary phone. ' +
+      'Leave false unless you specifically need the account to appear online.',
   })
   @IsBoolean()
-  markOnline: boolean = true;
+  markOnline: boolean = false;
 }
 
 export class WebjsConfig {

@@ -228,6 +228,7 @@ import { LocalStore } from '@waha/core/storage/LocalStore';
 import {
   WAHA_CLIENT_BROWSER_NAME,
   WAHA_CLIENT_DEVICE_NAME,
+  WAHA_NOWEB_AUTO_RESTART_MINUTES,
   WAHA_WA_VERSION,
 } from '@waha/core/env';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -254,7 +255,11 @@ const ToEnginePresenceStatus = flipObject(PresenceStatuses);
 
 export class WhatsappSessionNoWebCore extends WhatsappSession {
   private START_ATTEMPT_DELAY_SECONDS = 2;
-  private AUTO_RESTART_AFTER_SECONDS = 28 * 60;
+  // Periodic forced restart of the socket. Disabled by default (0) — a real
+  // companion device holds a persistent connection, so timer-based reconnects are
+  // bot-like churn that hurts longevity rather than helping. Opt in via
+  // WAHA_NOWEB_AUTO_RESTART_MINUTES only as a last resort.
+  private AUTO_RESTART_AFTER_SECONDS = WAHA_NOWEB_AUTO_RESTART_MINUTES * 60;
 
   engine = WAHAEngine.NOWEB;
   authFactory = new NowebAuthFactoryCore();
@@ -389,7 +394,9 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     const fullSyncEnabled = this.sessionConfig?.noweb?.store?.fullSync || false;
     let markOnlineOnConnect = this.sessionConfig?.noweb?.markOnline;
     if (markOnlineOnConnect == undefined) {
-      markOnlineOnConnect = true;
+      // Default false: a perpetually-online companion is a bot signal and
+      // suppresses notifications on the primary phone.
+      markOnlineOnConnect = false;
     }
     return {
       agent: agents?.socket,
@@ -403,7 +410,9 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       logger: this.engineLogger,
       mobile: false,
       defaultQueryTimeoutMs: 120_000,
-      keepAliveIntervalMs: 15_000,
+      // Baileys default (30s). Halving it doesn't improve longevity and a faster
+      // ping is an atypical signal — keep it at the proven value.
+      keepAliveIntervalMs: 30_000,
       connectTimeoutMs: 30_000,
       retryRequestDelayMs: 2_000,
       getMessage: (key) => this.getMessage(key),
@@ -552,6 +561,13 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   }
 
   private enableAutoRestart() {
+    if (this.AUTO_RESTART_AFTER_SECONDS <= 0) {
+      this.logger.info(
+        'Periodic auto-restart disabled (WAHA_NOWEB_AUTO_RESTART_MINUTES=0). ' +
+          'Reconnecting only on socket error.',
+      );
+      return;
+    }
     this.autoRestartJob.start(async () => {
       if (this.status === WAHASessionStatus.SCAN_QR_CODE) {
         this.logger.debug('Auto-restart skipped, waiting for QR scan.');
@@ -567,7 +583,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   }
 
   private enablePresenceKeepAlive() {
-    const markOnline = this.sessionConfig?.noweb?.markOnline ?? true;
+    const markOnline = this.sessionConfig?.noweb?.markOnline ?? false;
     if (!markOnline) {
       this.logger.info(
         'Presence keep-alive disabled: markOnline is false.',
