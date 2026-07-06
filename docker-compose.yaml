@@ -55,6 +55,30 @@ services:
         max-size: '100m'
         max-file: '10'
 
+  # One-shot deploy-time probe: verifies the ts-bridge proxy egresses via the
+  # India exit node. Writes results to Postgres (BAN_PREVENTION_DATABASE_URL db,
+  # table ts_bridge_probe) since container logs are not remotely readable.
+  ts-probe:
+    image: alpine:3.20
+    restart: 'no'
+    depends_on:
+      - ts-bridge
+    environment:
+      - DB_URL=${BAN_PREVENTION_DATABASE_URL}
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache curl postgresql16-client >/dev/null 2>&1
+        psql "$$DB_URL" -c "CREATE TABLE IF NOT EXISTS ts_bridge_probe(at timestamptz DEFAULT now(), attempt int, dns text, direct_ip text, proxy_result text);" || true
+        for i in 1 2 3 4; do
+          sleep 25
+          DNS=$$(getent hosts ts-bridge 2>&1 | tr -d "'\"" || echo NO_DNS)
+          DIRECT=$$(curl -sS -m 10 https://api.ipify.org 2>&1 | tr -d "'\"" || true)
+          PROXY=$$(curl -sS -m 20 -x http://ts-bridge:8080 https://api.ipify.org 2>&1 | tr -d "'\"" || true)
+          psql "$$DB_URL" -c "INSERT INTO ts_bridge_probe(attempt, dns, direct_ip, proxy_result) VALUES ($$i, '$${DNS:-empty}', '$${DIRECT:-empty}', '$${PROXY:-empty}');" || true
+        done
+
 # NOTE: Only if you're using PostgreSQL to save sessions
 # https://waha.devlike.pro/docs/how-to/storages/#media---postgresql
 #  postgres:
