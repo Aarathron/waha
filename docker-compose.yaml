@@ -33,6 +33,28 @@ services:
     env_file:
       - .env
 
+  # India 4G exit for WhatsApp sockets: userspace Tailscale node routing via the
+  # Android phone exit node (PHONE_TS_IP). Sessions opt in with
+  # config.proxy.server = "ts-bridge:8080". Internal network only — no ports mapped.
+  # Design: docs/superpowers/specs/2026-06-24-android-4g-proxy-bridge-design.md
+  ts-bridge:
+    image: tailscale/tailscale:latest
+    restart: always
+    hostname: waha-ts-bridge
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_USERSPACE=true
+      - TS_EXTRA_ARGS=--exit-node=${PHONE_TS_IP} --exit-node-allow-lan-access
+      - TS_OUTBOUND_HTTP_PROXY_LISTEN=0.0.0.0:8080
+      - TS_STATE_DIR=/var/lib/tailscale
+    volumes:
+      - ts-bridge-state:/var/lib/tailscale
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '100m'
+        max-file: '10'
+
 # NOTE: Only if you're using PostgreSQL to save sessions
 # https://waha.devlike.pro/docs/how-to/storages/#media---postgresql
 #  postgres:
@@ -102,3 +124,4 @@ volumes:
   mongodb_data: {}
   minio_data: {}
   pg_data: {}
+  ts-bridge-state: {}
