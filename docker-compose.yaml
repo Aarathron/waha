@@ -33,6 +33,15 @@ services:
     env_file:
       - .env
 
+    # Coolify marks compose containers without a healthcheck as "unhealthy".
+    # /ping is unauthenticated and tier-independent (unlike /health, Plus-only).
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:3000/ping']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
   # India 4G exit for WhatsApp sockets: userspace Tailscale node routing via the
   # Android phone exit node (PHONE_TS_IP). Sessions opt in with
   # config.proxy.server = "ts-bridge:8080". Internal network only — no ports mapped.
@@ -44,14 +53,13 @@ services:
     environment:
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_USERSPACE=true
-      # DIAGNOSTIC: exit-node flag temporarily removed — with the phone exit node
-      # unreachable, `tailscale up --exit-node` fails and containerboot crash-loops.
-      # Restore once the phone node is confirmed online:
-      #   TS_EXTRA_ARGS=--exit-node=${PHONE_TS_IP} --exit-node-allow-lan-access
+      # NOTE: if the phone exit node is offline, `tailscale up --exit-node`
+      # fails and containerboot crash-loops — keep the phone plugged in 24/7.
+      - TS_EXTRA_ARGS=--exit-node=${PHONE_TS_IP} --exit-node-allow-lan-access
       - TS_OUTBOUND_HTTP_PROXY_LISTEN=0.0.0.0:8080
       - TS_STATE_DIR=/var/lib/tailscale
+      # Serves /healthz on :9002 (TS_LOCAL_ADDR_PORT default) once tailscale is up.
       - TS_ENABLE_HEALTH_CHECK=true
-      - TS_HEALTHCHECK_ADDR_PORT=0.0.0.0:9002
     volumes:
       - ts-bridge-state:/var/lib/tailscale
     logging:
