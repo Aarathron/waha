@@ -44,9 +44,14 @@ services:
     environment:
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_USERSPACE=true
-      - TS_EXTRA_ARGS=--exit-node=${PHONE_TS_IP} --exit-node-allow-lan-access
+      # DIAGNOSTIC: exit-node flag temporarily removed — with the phone exit node
+      # unreachable, `tailscale up --exit-node` fails and containerboot crash-loops.
+      # Restore once the phone node is confirmed online:
+      #   TS_EXTRA_ARGS=--exit-node=${PHONE_TS_IP} --exit-node-allow-lan-access
       - TS_OUTBOUND_HTTP_PROXY_LISTEN=0.0.0.0:8080
       - TS_STATE_DIR=/var/lib/tailscale
+      - TS_ENABLE_HEALTH_CHECK=true
+      - TS_HEALTHCHECK_ADDR_PORT=0.0.0.0:9002
     volumes:
       - ts-bridge-state:/var/lib/tailscale
     logging:
@@ -70,13 +75,15 @@ services:
       - -c
       - |
         apk add --no-cache curl postgresql16-client >/dev/null 2>&1
-        psql "$$DB_URL" -c "CREATE TABLE IF NOT EXISTS ts_bridge_probe(at timestamptz DEFAULT now(), attempt int, dns text, direct_ip text, proxy_result text);" || true
+        psql "$$DB_URL" -c "CREATE TABLE IF NOT EXISTS ts_bridge_probe(at timestamptz DEFAULT now(), attempt int, dns text, direct_ip text, proxy_result text, healthz text);" || true
+        psql "$$DB_URL" -c "ALTER TABLE ts_bridge_probe ADD COLUMN IF NOT EXISTS healthz text;" || true
         for i in 1 2 3 4; do
           sleep 25
           DNS=$$(getent hosts ts-bridge 2>&1 | tr -d "'\"" || echo NO_DNS)
           DIRECT=$$(curl -sS -m 10 https://api.ipify.org 2>&1 | tr -d "'\"" || true)
           PROXY=$$(curl -sS -m 20 -x http://ts-bridge:8080 https://api.ipify.org 2>&1 | tr -d "'\"" || true)
-          psql "$$DB_URL" -c "INSERT INTO ts_bridge_probe(attempt, dns, direct_ip, proxy_result) VALUES ($$i, '$${DNS:-empty}', '$${DIRECT:-empty}', '$${PROXY:-empty}');" || true
+          HEALTH=$$(curl -sS -m 5 http://ts-bridge:9002/healthz 2>&1 | tr -d "'\"" || true)
+          psql "$$DB_URL" -c "INSERT INTO ts_bridge_probe(attempt, dns, direct_ip, proxy_result, healthz) VALUES ($$i, '$${DNS:-empty}', '$${DIRECT:-empty}', '$${PROXY:-empty}', '$${HEALTH:-empty}');" || true
         done
 
 # NOTE: Only if you're using PostgreSQL to save sessions
