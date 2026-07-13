@@ -32,7 +32,10 @@ RECOVERY_CHECKS="${FAILOVER_RECOVERY_CHECKS:-15}"
 MIN_DWELL="${FAILOVER_MIN_DWELL:-1800}"
 QUARANTINE="${FAILOVER_QUARANTINE:-3600}"
 WAHA_URL="${WAHA_URL:-http://waha:3000}"
-WAHA_API_KEY="${WAHA_API_KEY:-}"
+# Prefer the plain key when both are set — WAHA_API_KEY may be a sha512: hash,
+# which cannot authenticate API calls. (Resolved here in shell instead of a
+# nested compose default, which Coolify's env parser cannot read.)
+WAHA_API_KEY="${WAHA_API_KEY_PLAIN:-${WAHA_API_KEY:-}}"
 DB_URL="${DB_URL:-}"
 PHONE_TS_IP="${PHONE_TS_IP:-}"
 PHONE_TS_IP_2="${PHONE_TS_IP_2:-}"
