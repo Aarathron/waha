@@ -69,7 +69,9 @@ services:
       - PHONE_TS_IP=${PHONE_TS_IP}
       - PHONE_TS_IP_2=${PHONE_TS_IP_2:-}
       - DB_URL=${BAN_PREVENTION_DATABASE_URL}
-      - WAHA_API_KEY=${WAHA_API_KEY}
+      # Must be the PLAIN key: if WAHA_API_KEY is stored hashed (sha512:...),
+      # set WAHA_API_KEY_PLAIN too — the watchdog authenticates real requests.
+      - WAHA_API_KEY=${WAHA_API_KEY_PLAIN:-${WAHA_API_KEY}}
       - WAHA_URL=http://waha:3000
       # Tuning (defaults shown; override via Coolify env if needed)
       - FAILOVER_CHECK_INTERVAL=${FAILOVER_CHECK_INTERVAL:-20}

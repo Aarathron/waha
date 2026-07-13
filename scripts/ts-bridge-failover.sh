@@ -209,10 +209,41 @@ restart_sessions() {
     log_event error "" "" "no WAHA_API_KEY" "cannot restart sessions after egress switch"
     return 1
   fi
-  names=$(curl -sf -m 10 -H "X-Api-Key: $WAHA_API_KEY" "$WAHA_URL/api/sessions" 2>/dev/null \
-    | jq -r '.[] | select(.config.proxy.server == "ts-bridge:8080") | select(.status != "STOPPED") | .name' 2>/dev/null)
+  case "$WAHA_API_KEY" in
+    sha512:*)
+      log_event error "" "" "WAHA_API_KEY is a sha512 hash" \
+        "watchdog needs the PLAIN key to authenticate (set WAHA_API_KEY_PLAIN); cannot restart sessions"
+      return 1
+      ;;
+  esac
+  # fetch the session list with retries — a listing failure must NOT be
+  # mistaken for "no sessions to restart"
+  list_json=""
+  la=1
+  while [ "$la" -le 3 ]; do
+    if list_json=$(curl -sf -m 10 -H "X-Api-Key: $WAHA_API_KEY" "$WAHA_URL/api/sessions" 2>/dev/null) \
+       && [ -n "$list_json" ]; then
+      break
+    fi
+    list_json=""
+    la=$((la + 1))
+    sleep 5
+  done
+  if [ -z "$list_json" ]; then
+    log_event error "" "" "session list failed" \
+      "GET /api/sessions failed 3x after '$rs_reason'; sessions must reconnect on their own"
+    return 1
+  fi
+  # @uri-encode names: this fork allows arbitrary session names, and raw
+  # whitespace//?/# would corrupt both the word-split and the restart URL
+  if ! names=$(printf %s "$list_json" | jq -r \
+      '.[] | select(.config.proxy.server == "ts-bridge:8080") | select(.status != "STOPPED") | .name | @uri' 2>/dev/null); then
+    log_event error "" "" "session list unparseable" \
+      "GET /api/sessions returned non-JSON after '$rs_reason'; sessions must reconnect on their own"
+    return 1
+  fi
   if [ -z "$names" ]; then
-    log_event sessions_restart "" "" "nothing to restart" "no non-stopped sessions with proxy ts-bridge:8080 (or waha unreachable)"
+    log_event sessions_restart "" "" "nothing to restart" "no non-stopped sessions with proxy ts-bridge:8080"
     return 0
   fi
   results=""

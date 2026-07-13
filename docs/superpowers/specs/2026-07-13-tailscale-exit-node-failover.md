@@ -67,8 +67,14 @@ restart).
   until the next successful proxy check — restarting sessions with no working
   path would only churn them into FAILED.
 - **Session restarts**: after every verified switch the watchdog calls the WAHA
-  API (`GET /api/sessions`, filter `config.proxy.server == "ts-bridge:8080"` and
-  `status != STOPPED`, then `POST /api/sessions/{name}/restart` with 3 retries).
+  API (`GET /api/sessions` with 3 retries — a listing failure is logged as an
+  `error`, never mistaken for "no sessions"; filter
+  `config.proxy.server == "ts-bridge:8080"` and `status != STOPPED`; names are
+  URI-encoded since this fork allows arbitrary session names; then
+  `POST /api/sessions/{name}/restart` with 3 retries per session). The watchdog
+  needs the PLAIN API key — if `WAHA_API_KEY` is stored hashed (`sha512:…`),
+  set `WAHA_API_KEY_PLAIN` (compose falls back automatically; a hash is
+  detected and logged as an `error`).
   Old Baileys sockets are dead after an egress change either way; the restart
   makes reconnection immediate and deterministic. Suppressed during the first 90s
   after container start (WAHA is booting too). A full WAHA-container restart is
@@ -132,6 +138,7 @@ container is stuck pre-backend (check `ts_bridge_probe` and the `error` events).
 | `PHONE_TS_IP_2` | no | phone 2 Tailscale IP (new; empty = tier skipped) |
 | `BAN_PREVENTION_DATABASE_URL` | yes | log destination (existing) |
 | `WAHA_API_KEY` | yes | reused for session restarts (existing) |
+| `WAHA_API_KEY_PLAIN` | only if key is hashed | plain key for watchdog auth when `WAHA_API_KEY=sha512:…` |
 | `FAILOVER_*` | no | tunables, defaults in compose/script |
 
 ## Failure-mode guarantees
