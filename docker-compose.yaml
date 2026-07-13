@@ -53,13 +53,16 @@ services:
   # Design: docs/superpowers/specs/2026-07-13-tailscale-exit-node-failover.md
   # (supersedes docs/superpowers/specs/2026-06-24-android-4g-proxy-bridge-design.md)
   ts-bridge:
-    image: tailscale/tailscale:v1.98.8
+    # Built from source (Dockerfile.tsbridge, FROM tailscale/tailscale:v1.98.8):
+    # the watchdog script + curl/jq/psql are BAKED IN. A bind mount does not
+    # work here — Coolify rewrites relative binds to a host path that lacks the
+    # repo, docker then creates an empty DIRECTORY at /failover.sh, and the
+    # container crash-loops (observed 2026-07-13).
+    build:
+      context: .
+      dockerfile: Dockerfile.tsbridge
     restart: always
     hostname: waha-ts-bridge
-    # No `command:` override — the server's docker compose rejects `command: []`
-    # ("must be a null"). The image CMD (containerboot) becomes an ignored
-    # positional arg to failover.sh, which starts containerboot itself.
-    entrypoint: ['/bin/sh', '/failover.sh']
     environment:
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_USERSPACE=true
@@ -86,7 +89,6 @@ services:
       - FAILOVER_CHECK_URLS=${FAILOVER_CHECK_URLS:-https://api.ipify.org https://checkip.amazonaws.com https://ifconfig.me/ip}
     volumes:
       - ts-bridge-state:/var/lib/tailscale
-      - ./scripts/ts-bridge-failover.sh:/failover.sh:ro
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:9002/healthz']
       interval: 30s

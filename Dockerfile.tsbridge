@@ -1,0 +1,12 @@
+# ts-bridge: Tailscale sidecar + exit-node failover watchdog.
+# Built from source so the watchdog script and its tools are baked in —
+# no bind mount (Coolify's host path for relative binds may not contain the
+# repo, yielding an empty directory at /failover.sh and a crash-loop) and
+# no runtime `apk add` (proxy must come up even if package mirrors are down).
+FROM tailscale/tailscale:v1.98.8
+
+RUN apk add --no-cache curl jq postgresql16-client
+
+COPY scripts/ts-bridge-failover.sh /failover.sh
+
+ENTRYPOINT ["/bin/sh", "/failover.sh"]

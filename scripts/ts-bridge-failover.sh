@@ -374,12 +374,18 @@ echo "[failover] starting containerboot"
 "$CONTAINERBOOT" &
 BOOT_PID=$!
 
-echo "[failover] installing curl/jq/psql"
-until apk add --no-cache curl jq postgresql16-client >/dev/null 2>&1 \
-   || apk add --no-cache curl jq postgresql-client >/dev/null 2>&1; do
-  echo "[failover] apk install failed; retrying in 10s"
-  sleep 10
-done
+# curl/jq/psql are baked into the image (Dockerfile.tsbridge); this loop is a
+# safety net for running on a stock tailscale image, guarded so a dead network
+# at boot cannot spin it when the tools are already present.
+if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1 \
+   || ! command -v psql >/dev/null 2>&1; then
+  echo "[failover] installing curl/jq/psql"
+  until apk add --no-cache curl jq postgresql16-client >/dev/null 2>&1 \
+     || apk add --no-cache curl jq postgresql-client >/dev/null 2>&1; do
+    echo "[failover] apk install failed; retrying in 10s"
+    sleep 10
+  done
+fi
 
 STARTUP_GRACE_UNTIL=$(($(now) + STARTUP_GRACE))
 ensure_table
