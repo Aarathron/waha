@@ -42,26 +42,50 @@ services:
       retries: 3
       start_period: 20s
 
-  # India 4G exit for WhatsApp sockets: userspace Tailscale node routing via the
-  # Android phone exit node (PHONE_TS_IP). Sessions opt in with
+  # India 4G exit for WhatsApp sockets: userspace Tailscale node routing via an
+  # Android phone exit node. Sessions opt in with
   # config.proxy.server = "ts-bridge:8080". Internal network only — no ports mapped.
-  # Design: docs/superpowers/specs/2026-06-24-android-4g-proxy-bridge-design.md
+  #
+  # The exit node is managed at RUNTIME by scripts/ts-bridge-failover.sh
+  # (fallback chain: phone1 -> phone2 -> direct Hetzner egress), NOT via
+  # TS_EXTRA_ARGS — so containerboot always starts even when every phone is
+  # offline, and the proxy at :8080 never goes down with a phone.
+  # Design: docs/superpowers/specs/2026-07-13-tailscale-exit-node-failover.md
+  # (supersedes docs/superpowers/specs/2026-06-24-android-4g-proxy-bridge-design.md)
   ts-bridge:
-    image: tailscale/tailscale:latest
+    image: tailscale/tailscale:v1.98.8
     restart: always
     hostname: waha-ts-bridge
+    entrypoint: ['/bin/sh', '/failover.sh']
+    command: []
     environment:
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_USERSPACE=true
-      # NOTE: if the phone exit node is offline, `tailscale up --exit-node`
-      # fails and containerboot crash-loops — keep the phone plugged in 24/7.
-      - TS_EXTRA_ARGS=--exit-node=${PHONE_TS_IP} --exit-node-allow-lan-access
       - TS_OUTBOUND_HTTP_PROXY_LISTEN=0.0.0.0:8080
       - TS_STATE_DIR=/var/lib/tailscale
       # Serves /healthz on :9002 (TS_LOCAL_ADDR_PORT default) once tailscale is up.
       - TS_ENABLE_HEALTH_CHECK=true
+      # --- failover watchdog (scripts/ts-bridge-failover.sh) ---
+      - PHONE_TS_IP=${PHONE_TS_IP}
+      - PHONE_TS_IP_2=${PHONE_TS_IP_2:-}
+      - DB_URL=${BAN_PREVENTION_DATABASE_URL}
+      - WAHA_API_KEY=${WAHA_API_KEY}
+      - WAHA_URL=http://waha:3000
+      # Tuning (defaults shown; override via Coolify env if needed)
+      - FAILOVER_CHECK_INTERVAL=${FAILOVER_CHECK_INTERVAL:-20}
+      - FAILOVER_FAIL_THRESHOLD=${FAILOVER_FAIL_THRESHOLD:-3}
+      - FAILOVER_RECOVERY_CHECKS=${FAILOVER_RECOVERY_CHECKS:-15}
+      - FAILOVER_MIN_DWELL=${FAILOVER_MIN_DWELL:-1800}
+      - FAILOVER_QUARANTINE=${FAILOVER_QUARANTINE:-3600}
     volumes:
       - ts-bridge-state:/var/lib/tailscale
+      - ./scripts/ts-bridge-failover.sh:/failover.sh:ro
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:9002/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     logging:
       driver: 'json-file'
       options:

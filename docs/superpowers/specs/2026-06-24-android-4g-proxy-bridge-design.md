@@ -4,6 +4,13 @@ Date: 2026-06-24
 Status: Approved design, pending implementation
 Author: pairing session (Amol + Claude)
 
+> **Partially superseded (2026-07-13):** the exit node is no longer set via
+> `TS_EXTRA_ARGS` at container boot (that made the phone a hard single point of
+> failure — phone off → containerboot crash-loop → proxy down → all sessions
+> dead). It is now runtime-managed by a failover watchdog with the chain
+> phone1 → phone2 → direct Hetzner egress.
+> See `2026-07-13-tailscale-exit-node-failover.md`.
+
 ## Problem
 
 WAHA (NOWEB/Baileys engine) runs in a Docker container on a Hetzner datacenter IP
