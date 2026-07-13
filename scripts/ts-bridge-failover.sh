@@ -36,8 +36,11 @@ WAHA_API_KEY="${WAHA_API_KEY:-}"
 DB_URL="${DB_URL:-}"
 PHONE_TS_IP="${PHONE_TS_IP:-}"
 PHONE_TS_IP_2="${PHONE_TS_IP_2:-}"
+# Space-separated list of egress-IP probe URLs. The active path is judged dead
+# only when ALL of them fail — one probe service being down must never trigger
+# a failover (that would invalidate healthy WhatsApp sockets).
+CHECK_URLS="${FAILOVER_CHECK_URLS:-https://api.ipify.org https://checkip.amazonaws.com https://ifconfig.me/ip}"
 # Test hooks: the harness swaps these for a mock proxy/egress.
-CHECK_URL="${FAILOVER_CHECK_URL:-https://api.ipify.org}"
 PROXY_ADDR="${FAILOVER_PROXY_ADDR:-http://127.0.0.1:8080}"
 CONTAINERBOOT="${FAILOVER_CONTAINERBOOT:-/usr/local/bin/containerboot}"
 VERIFY_TRIES="${FAILOVER_VERIFY_TRIES:-6}"
@@ -57,6 +60,9 @@ P1_ONLINE=false
 P2_ONLINE=false
 STATUS_JSON='{}'
 LOOP_N=0
+# Set when sockets were invalidated (exit node flipped) but no working path was
+# found to restart sessions over; the restart runs as soon as a path answers.
+PENDING_RESTART=0
 
 now() { date +%s; }
 
@@ -142,20 +148,59 @@ peer_online() {
 }
 
 # proxy_check — end-to-end test of the ACTIVE egress path through the proxy.
-# Prints the egress IP on success.
+# Tries every probe URL; the path is dead only if ALL fail. Prints the egress
+# IP on success.
 proxy_check() {
-  curl -sf -m 15 -x "$PROXY_ADDR" "$CHECK_URL" 2>/dev/null
+  for pc_u in $CHECK_URLS; do
+    if pc_r=$(curl -sf -m 10 -x "$PROXY_ADDR" "$pc_u" 2>/dev/null) && [ -n "$pc_r" ]; then
+      printf %s "$pc_r"
+      return 0
+    fi
+  done
+  return 1
 }
 
+# apply_tier <tier> — returns tailscale's exit status; a failed `tailscale set`
+# must never be treated as a completed switch.
 apply_tier() {
   if [ "$1" -eq 2 ]; then
-    $TSC set --exit-node= 2>&1
+    $TSC set --exit-node= >/dev/null 2>&1
   else
-    $TSC set --exit-node="$(tier_ip "$1")" --exit-node-allow-lan-access=true 2>&1
+    $TSC set --exit-node="$(tier_ip "$1")" --exit-node-allow-lan-access=true >/dev/null 2>&1
   fi
 }
 
+# exit_node_matches <tier> — tailscaled's actual exit node (per STATUS_JSON,
+# refresh first) is the one this tier wants. Guards against `tailscale set`
+# silently not taking effect: the proxy answering is not enough, the probe
+# could be riding the OLD path.
+exit_node_matches() {
+  if [ "$1" -eq 2 ]; then
+    printf %s "$STATUS_JSON" | jq -e '[.ExitNodeStatus.TailscaleIPs[]?] | length == 0' >/dev/null 2>&1
+  else
+    printf %s "$STATUS_JSON" | jq -e --arg ip "$(tier_ip "$1")" \
+      '[.ExitNodeStatus.TailscaleIPs[]? | split("/")[0]] | index($ip) != null' >/dev/null 2>&1
+  fi
+}
+
+# derive_tier — recover the real current tier from tailscaled state (used when
+# a rollback fails and our bookkeeping can no longer be trusted).
+derive_tier() {
+  dt_ip=$(printf %s "$STATUS_JSON" | jq -r '(.ExitNodeStatus.TailscaleIPs[0] // "") | split("/")[0]' 2>/dev/null)
+  if [ -z "$dt_ip" ]; then
+    echo 2
+  elif [ "$dt_ip" = "$PHONE_TS_IP" ]; then
+    echo 0
+  elif [ -n "$PHONE_TS_IP_2" ] && [ "$dt_ip" = "$PHONE_TS_IP_2" ]; then
+    echo 1
+  else
+    echo 2
+  fi
+}
+
+# restart_sessions [reason] — reason defaults to "egress switched"
 restart_sessions() {
+  rs_reason="${1:-egress switched}"
   if [ "$(now)" -lt "$STARTUP_GRACE_UNTIL" ]; then
     log_event sessions_restart "" "" "skipped" "within ${STARTUP_GRACE}s startup grace (waha is booting)"
     return 0
@@ -185,7 +230,7 @@ restart_sessions() {
     done
     [ "$ok" -eq 1 ] && results="$results $n:ok" || results="$results $n:FAILED"
   done
-  log_event sessions_restart "" "" "egress switched" "restarted:$results"
+  log_event sessions_restart "" "" "$rs_reason" "restarted:$results"
 }
 
 # try_switch <new_tier> <reason> — the ONLY place the exit node changes.
@@ -197,18 +242,25 @@ try_switch() {
   new=$1
   reason=$2
   old=$CURRENT_TIER
-  apply_tier "$new" >/dev/null 2>&1
+  applied=1
+  apply_tier "$new" || applied=0
   verified=0
-  i=0
-  while [ "$i" -lt "$VERIFY_TRIES" ]; do
-    sleep "$VERIFY_SLEEP"
-    if ip=$(proxy_check); then
-      verified=1
-      LAST_PROXY_IP=$ip
-      break
-    fi
-    i=$((i + 1))
-  done
+  if [ "$applied" -eq 1 ]; then
+    i=0
+    while [ "$i" -lt "$VERIFY_TRIES" ]; do
+      sleep "$VERIFY_SLEEP"
+      refresh_status
+      # BOTH must hold: tailscaled really runs on the requested exit node AND
+      # the path answers end-to-end. Proxy-answering alone can be the OLD path
+      # still working after a `tailscale set` that didn't take effect.
+      if exit_node_matches "$new" && ip=$(proxy_check); then
+        verified=1
+        LAST_PROXY_IP=$ip
+        break
+      fi
+      i=$((i + 1))
+    done
+  fi
   refresh_status
   if [ "$verified" -eq 1 ]; then
     CURRENT_TIER=$new
@@ -217,24 +269,41 @@ try_switch() {
     PROMO_TARGET=""
     PROMO_COUNT=0
     log_event switch "$(tier_name "$old")" "$(tier_name "$new")" "$reason" "verified egress=$LAST_PROXY_IP"
-    [ "$new" != "$old" ] && restart_sessions
+    if [ "$new" != "$old" ]; then
+      restart_sessions
+      PENDING_RESTART=0
+    fi
     return 0
   fi
-  # verification failed
+  # switch failed (tailscale set refused, or the new path never answered)
+  fail_how="verify failed"
+  [ "$applied" -eq 0 ] && fail_how="tailscale set failed"
   [ "$new" -ne 2 ] && set_quarantine "$new"
   if [ "$new" -lt "$old" ]; then
-    # failed promotion: revert to the tier that was working
-    apply_tier "$old" >/dev/null 2>&1
+    # failed promotion: roll back to the tier that was working
+    rollback_ok=1
+    apply_tier "$old" || rollback_ok=0
+    refresh_status
+    if [ "$rollback_ok" -eq 0 ] || ! exit_node_matches "$old"; then
+      # rollback did not take — resync bookkeeping with tailscaled's reality
+      CURRENT_TIER=$(derive_tier)
+      log_event error "$(tier_name "$old")" "$(tier_name "$new")" "$reason" \
+        "ROLLBACK FAILED after promotion attempt; actual state=$(tier_name "$CURRENT_TIER")"
+    else
+      CURRENT_TIER=$old
+    fi
     LAST_SWITCH_TS=$(now)
     PROMO_TARGET=""
     PROMO_COUNT=0
     log_event switch_failed "$(tier_name "$old")" "$(tier_name "$new")" "$reason" \
-      "promotion verify failed; reverted to $(tier_name "$old"), quarantined $(tier_name "$new") for ${QUARANTINE}s"
-    # the flap killed existing sockets either way — one restart cycle
-    restart_sessions
+      "promotion $fail_how; on $(tier_name "$CURRENT_TIER"), quarantined $(tier_name "$new") for ${QUARANTINE}s"
+    if [ "$applied" -eq 1 ]; then
+      # the exit node actually flapped — existing sockets are dead
+      restart_sessions "recovering sockets after failed promotion"
+    fi
   else
     log_event switch_failed "$(tier_name "$old")" "$(tier_name "$new")" "$reason" \
-      "demotion verify failed; cascading to next tier"
+      "demotion $fail_how; cascading to next tier"
   fi
   return 1
 }
@@ -247,30 +316,36 @@ demote() {
       if try_switch "$t" "$1"; then
         return 0
       fi
-      # try_switch left us on the failed tier's exit node; keep cascading
-      CURRENT_TIER=$t
+      # resync with whatever exit node tailscaled is actually on, keep cascading
+      CURRENT_TIER=$(derive_tier)
     fi
     t=$((t + 1))
   done
   FAIL_COUNT=0 # retry demotion only after another full failure window
+  # the cascade flipped the exit node without finding a working path: existing
+  # sockets are dead, but restarting sessions now would just churn them into
+  # FAILED — defer the restart until the next successful proxy_check.
+  PENDING_RESTART=1
   log_event error "$(tier_name "$CURRENT_TIER")" "" "$1" \
-    "no lower tier verified (direct egress also failing?); staying put, will retry"
+    "no lower tier verified (direct egress also failing?); staying put, session restart deferred until a path answers"
   return 1
 }
 
 # ---------------------------------------------------------------------------
 # bootstrap
 # ---------------------------------------------------------------------------
+# containerboot starts FIRST: the proxy at :8080 must come up even if package
+# mirrors/DNS are unreachable — the watchdog can wait, the proxy cannot.
+echo "[failover] starting containerboot"
+"$CONTAINERBOOT" &
+BOOT_PID=$!
+
 echo "[failover] installing curl/jq/psql"
 until apk add --no-cache curl jq postgresql16-client >/dev/null 2>&1 \
    || apk add --no-cache curl jq postgresql-client >/dev/null 2>&1; do
   echo "[failover] apk install failed; retrying in 10s"
   sleep 10
 done
-
-echo "[failover] starting containerboot"
-"$CONTAINERBOOT" &
-BOOT_PID=$!
 
 STARTUP_GRACE_UNTIL=$(($(now) + STARTUP_GRACE))
 ensure_table
@@ -321,10 +396,27 @@ while :; do
 
   refresh_status
 
+  # --- self-heal: tailscaled must be on the tier we think it is ---
+  if ! exit_node_matches "$CURRENT_TIER"; then
+    DRIFT_COUNT=$((${DRIFT_COUNT:-0} + 1))
+    if [ "$DRIFT_COUNT" -eq 1 ] || [ $((DRIFT_COUNT % 15)) -eq 0 ]; then
+      log_event error "" "$(tier_name "$CURRENT_TIER")" "exit-node drift detected" \
+        "tailscaled state disagrees with watchdog tier (${DRIFT_COUNT}x); re-applying"
+    fi
+    apply_tier "$CURRENT_TIER" || true
+    refresh_status
+  else
+    DRIFT_COUNT=0
+  fi
+
   # --- demotion: active path must answer end-to-end ---
   if ip=$(proxy_check); then
     LAST_PROXY_IP=$ip
     FAIL_COUNT=0
+    if [ "$PENDING_RESTART" -eq 1 ]; then
+      restart_sessions "path recovered after total outage"
+      PENDING_RESTART=0
+    fi
   else
     FAIL_COUNT=$((FAIL_COUNT + 1))
     LAST_PROXY_IP="CHECK_FAILED"

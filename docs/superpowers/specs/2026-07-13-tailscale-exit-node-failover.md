@@ -15,9 +15,11 @@ a hard single point of failure for the whole WhatsApp websocket path.
 
 The proxy endpoint `ts-bridge:8080` now stays up unconditionally; only the egress
 path *behind* it changes. `scripts/ts-bridge-failover.sh` is the ts-bridge
-container entrypoint: it backgrounds containerboot (no exit-node args → always
-starts), then runs a watchdog loop that applies the exit node at runtime via
-`tailscale set --exit-node=…` (no re-auth, no restart).
+container entrypoint: it backgrounds containerboot FIRST (no exit-node args →
+always starts, and before any package installation, so the proxy comes up even
+when apk mirrors/DNS are unreachable), then runs a watchdog loop that applies
+the exit node at runtime via `tailscale set --exit-node=…` (no re-auth, no
+restart).
 
 ### Fallback chain (tiers)
 
@@ -29,12 +31,23 @@ starts), then runs a watchdog loop that applies the exit node at runtime via
 
 ### Health checks
 
-- **Active path** (authoritative): `curl -x http://127.0.0.1:8080 https://api.ipify.org`
-  end-to-end through the proxy, every `FAILOVER_CHECK_INTERVAL` (20s).
+- **Active path** (authoritative): end-to-end curl through the proxy against a
+  LIST of independent egress-IP probes (`FAILOVER_CHECK_URLS`, default
+  api.ipify.org + checkip.amazonaws.com + ifconfig.me), every
+  `FAILOVER_CHECK_INTERVAL` (20s). The path counts as dead only when **all**
+  probes fail — a single probe service outage must never trigger a failover
+  (that would invalidate healthy WhatsApp sockets).
 - **Candidates**: `tailscale status --json` peer must be `Online` and advertise
   `ExitNodeOption`. (A candidate cannot be tested end-to-end without switching to
   it — there is one global exit node — so every switch is verified after applying
   and rolled back / cascaded if the new path doesn't answer.)
+- **Switch verification is two-fold**: `tailscale set`'s exit status is checked,
+  and after applying, `ExitNodeStatus` in `tailscale status --json` must actually
+  match the requested node before the proxy probe counts — the proxy answering
+  alone could be the OLD path still working after a `set` that didn't take
+  effect. A failed rollback resyncs the watchdog's tier from tailscaled's real
+  state, and a per-tick drift check re-applies the intended tier if tailscaled
+  ever disagrees.
 
 ### State machine
 
@@ -50,6 +63,9 @@ starts), then runs a watchdog loop that applies the exit node at runtime via
   through the proxy within ~60s. A failed promotion reverts to the old tier and
   quarantines the candidate for `FAILOVER_QUARANTINE` (3600s) — catches "phone in
   tailnet but 4G data dead". A failed demotion cascades to the next-worse tier.
+  If the whole cascade fails (total outage), the session restart is **deferred**
+  until the next successful proxy check — restarting sessions with no working
+  path would only churn them into FAILED.
 - **Session restarts**: after every verified switch the watchdog calls the WAHA
   API (`GET /api/sessions`, filter `config.proxy.server == "ts-bridge:8080"` and
   `status != STOPPED`, then `POST /api/sessions/{name}/restart` with 3 retries).

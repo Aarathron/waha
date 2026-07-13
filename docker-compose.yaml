@@ -77,6 +77,7 @@ services:
       - FAILOVER_RECOVERY_CHECKS=${FAILOVER_RECOVERY_CHECKS:-15}
       - FAILOVER_MIN_DWELL=${FAILOVER_MIN_DWELL:-1800}
       - FAILOVER_QUARANTINE=${FAILOVER_QUARANTINE:-3600}
+      - FAILOVER_CHECK_URLS=${FAILOVER_CHECK_URLS:-https://api.ipify.org https://checkip.amazonaws.com https://ifconfig.me/ip}
     volumes:
       - ts-bridge-state:/var/lib/tailscale
       - ./scripts/ts-bridge-failover.sh:/failover.sh:ro
