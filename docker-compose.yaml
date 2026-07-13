@@ -56,8 +56,10 @@ services:
     image: tailscale/tailscale:v1.98.8
     restart: always
     hostname: waha-ts-bridge
+    # No `command:` override — the server's docker compose rejects `command: []`
+    # ("must be a null"). The image CMD (containerboot) becomes an ignored
+    # positional arg to failover.sh, which starts containerboot itself.
     entrypoint: ['/bin/sh', '/failover.sh']
-    command: []
     environment:
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_USERSPACE=true
