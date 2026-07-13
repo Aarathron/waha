@@ -126,8 +126,14 @@ WHERE event = 'switch' GROUP BY 1 ORDER BY 1 DESC;
 ```
 
 Heartbeat cadence: one row every ~15 min. No heartbeats + no startup row after a
-deploy → the bind mount of `scripts/ts-bridge-failover.sh` failed or the
-container is stuck pre-backend (check `ts_bridge_probe` and the `error` events).
+deploy → the ts-bridge container is crash-looping or stuck pre-backend (check
+`ts_bridge_probe` and the `error` events; probe rows showing "Failed to connect
+to ts-bridge port 8080" / "Could not resolve proxy" = container down).
+
+The script and its tools are BAKED into the image (`Dockerfile.tsbridge`), not
+bind-mounted: Coolify rewrites relative binds to a host path that does not
+contain the repo, so docker created an empty directory at `/failover.sh` and
+the container crash-looped (observed on the 2026-07-13 first deploy).
 
 ## Env vars (Coolify)
 
