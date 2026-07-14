@@ -88,7 +88,11 @@ services:
       - FAILOVER_QUARANTINE=${FAILOVER_QUARANTINE:-3600}
       - FAILOVER_CHECK_URLS=${FAILOVER_CHECK_URLS:-https://api.ipify.org https://checkip.amazonaws.com https://ifconfig.me/ip}
     volumes:
-      - ts-bridge-state:/var/lib/tailscale
+      # -2: fresh state store. The original ts-bridge-state volume (written by
+      # older tailscale/tailscale:latest containers) made tailscaled/containerboot
+      # die pre-login on v1.98.8 in prod, while a fresh state store logs in fine
+      # (verified 2026-07-14 by running the same image+authkey with clean state).
+      - ts-bridge-state-2:/var/lib/tailscale
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:9002/healthz']
       interval: 30s
@@ -196,4 +200,4 @@ volumes:
   mongodb_data: {}
   minio_data: {}
   pg_data: {}
-  ts-bridge-state: {}
+  ts-bridge-state-2: {}
