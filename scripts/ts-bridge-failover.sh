@@ -370,9 +370,13 @@ demote() {
 # ---------------------------------------------------------------------------
 # containerboot starts FIRST: the proxy at :8080 must come up even if package
 # mirrors/DNS are unreachable — the watchdog can wait, the proxy cannot.
+# Its output goes to /tmp/boot.log so a death can be diagnosed via Postgres
+# (container stdout is not remotely readable on Coolify).
 echo "[failover] starting containerboot"
-"$CONTAINERBOOT" &
+"$CONTAINERBOOT" >/tmp/boot.log 2>&1 &
 BOOT_PID=$!
+
+boot_tail() { tail -n 15 /tmp/boot.log 2>/dev/null | tr -d '\r'; }
 
 # curl/jq/psql are baked into the image (Dockerfile.tsbridge); this loop is a
 # safety net for running on a stock tailscale image, guarded so a dead network
@@ -396,7 +400,8 @@ while :; do
   st=$($TSC status --json 2>/dev/null | jq -r '.BackendState // "unknown"' 2>/dev/null)
   [ "$st" = "Running" ] && break
   if ! kill -0 "$BOOT_PID" 2>/dev/null; then
-    log_event error "" "" "containerboot died during startup" "backend state was: $st"
+    log_event error "" "" "containerboot died during startup" \
+      "backend state was: $st; boot log tail: $(boot_tail)"
     exit 1
   fi
   waits=$((waits + 1))
@@ -430,7 +435,8 @@ while :; do
   LOOP_N=$((LOOP_N + 1))
 
   if ! kill -0 "$BOOT_PID" 2>/dev/null; then
-    log_event error "$(tier_name "$CURRENT_TIER")" "" "containerboot died" "exiting so docker restarts the container"
+    log_event error "$(tier_name "$CURRENT_TIER")" "" "containerboot died" \
+      "exiting so docker restarts the container; boot log tail: $(boot_tail)"
     exit 1
   fi
 
@@ -503,6 +509,11 @@ while :; do
 
   # --- heartbeat every ~15 min ---
   if [ $((LOOP_N % 45)) -eq 0 ]; then
+    # keep the containerboot log bounded (truncate leaves a sparse file;
+    # the writer's fd offset is unaffected and tail keeps working)
+    if [ "$(wc -c < /tmp/boot.log 2>/dev/null || echo 0)" -gt 5242880 ]; then
+      : > /tmp/boot.log
+    fi
     exit_node=$(printf %s "$STATUS_JSON" | jq -r '.ExitNodeStatus.TailscaleIPs[0] // "none"' 2>/dev/null)
     log_event heartbeat "" "$(tier_name "$CURRENT_TIER")" "periodic" \
       "tier=$(tier_name "$CURRENT_TIER") exit_node=$exit_node fail_count=$FAIL_COUNT promo=$PROMO_TARGET:$PROMO_COUNT"
