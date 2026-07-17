@@ -160,6 +160,46 @@ the container crash-looped (observed on the 2026-07-13 first deploy).
 | WAHA API down during restart | 3 retries, logged; Baileys reconnects organically |
 | containerboot crashes | Wrapper exits 1 → `restart: always` → clean re-election |
 | All phones offline at deploy | containerboot starts anyway — crash-loop eliminated |
+| Persisted prefs poison `tailscale up` | Can't happen: `TS_AUTH_ONCE=true` skips `up` on restarts; `TS_EXTRA_ARGS=--reset` covers the NeedsLogin path; direct tier resets `--exit-node-allow-lan-access` |
+| tailscaled state corrupt / node identity lost | 3 consecutive startup deaths → watchdog wipes `TS_STATE_DIR` → next boot re-registers via `TS_AUTHKEY` (loud `error` row: "wiping tailscaled state") |
+| Bridge restarts alone (WAHA container untouched) | Session restart is deferred through the 90s grace, not dropped — retried by the main loop once a path answers |
+| `TS_AUTHKEY` expires | Harmless while the node stays registered (auth keys only gate NEW registrations). Node-key expiry (default 180d) must be disabled in the Tailscale admin console for the ts-bridge node — see postmortem below |
+
+## Postmortem 2026-07-17: 9h crash-loop from persisted prefs
+
+The original "containerboot crashes → clean re-election" guarantee was false in
+one case: every phone-tier switch ran `tailscale set --exit-node-allow-lan-access=true`,
+which persists in the state volume; the direct-tier rollback only cleared
+`--exit-node=`. After the next container restart, containerboot's unconditional
+`tailscale up --accept-dns=false --auth-key=…` hit tailscale's accidental-revert
+protection ("requires mentioning all non-default flags"), exited 1, and the
+wrapper crash-looped every ~65s — proxy down, both sessions logged out, QRs
+expired, terminal FAILED. 1,742 `containerboot died during startup` rows
+between Jul 13 and Jul 17.
+
+Fixes (each kills an independent failure class):
+
+1. `TS_AUTH_ONCE=true` — restarts never run `tailscale up` (containerboot uses
+   `tailscale set` internally, which has no revert protection to trip) and an
+   expired `TS_AUTHKEY` can't break a registered node.
+2. `TS_EXTRA_ARGS=--reset` — when `up` does run (NeedsLogin: first boot, after
+   a state wipe, node-key expiry), persisted prefs can't block it. Note
+   `TS_EXTRA_ARGS` is only consumed by the `up` path, never by `set`.
+3. Direct tier resets `--exit-node-allow-lan-access=false` (state hygiene).
+4. Startup-death self-heal: consecutive-failure counter in the state dir;
+   at `FAILOVER_BOOT_FAIL_WIPE_THRESHOLD` (3, 0=off) the watchdog wipes
+   `TS_STATE_DIR` and lets the next boot re-register. Also covers the
+   2026-07-14 corrupt-state incident class (and upstream tailscale#19149).
+5. Grace-period session restarts are deferred (PENDING_RESTART), not dropped.
+
+Tests: `sh tests/ts-bridge/failover.test.sh` (unit: sourced functions against a
+mock `tailscale`; integration: full script runs with a dying mock containerboot
+asserting counter/wipe behavior).
+
+**Ops (manual, once):** in the Tailscale admin console, disable key expiry for
+the `waha-ts-bridge` node — default node-key expiry is 180 days and would
+otherwise force a NeedsLogin re-auth (needing a then-valid `TS_AUTHKEY`) around
+January 2027.
 
 ## Production drill
 

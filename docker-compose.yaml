@@ -68,6 +68,18 @@ services:
       - TS_USERSPACE=true
       - TS_OUTBOUND_HTTP_PROXY_LISTEN=0.0.0.0:8080
       - TS_STATE_DIR=/var/lib/tailscale
+      # Auth once, then reuse the persisted node identity: on restarts
+      # containerboot skips `tailscale up` entirely (uses `tailscale set`
+      # internally), so a runtime pref set by the watchdog can never trip
+      # "changing settings via 'tailscale up' requires mentioning all
+      # non-default flags" (crash-looped the bridge for 9h on 2026-07-17),
+      # and an expired TS_AUTHKEY can't break a registered node.
+      - TS_AUTH_ONCE=true
+      # When `tailscale up` DOES run (first boot / after a state wipe / node
+      # key expired -> NeedsLogin), --reset makes it immune to any persisted
+      # non-default prefs. Ops: disable key expiry for this node in the
+      # Tailscale admin console (default node-key expiry is 180 days).
+      - TS_EXTRA_ARGS=--reset
       # Serves /healthz on :9002 (TS_LOCAL_ADDR_PORT default) once tailscale is up.
       - TS_ENABLE_HEALTH_CHECK=true
       # --- failover watchdog (scripts/ts-bridge-failover.sh) ---
