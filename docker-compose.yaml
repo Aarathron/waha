@@ -87,6 +87,7 @@ services:
       - FAILOVER_MIN_DWELL=${FAILOVER_MIN_DWELL:-1800}
       - FAILOVER_QUARANTINE=${FAILOVER_QUARANTINE:-3600}
       - FAILOVER_CHECK_URLS=${FAILOVER_CHECK_URLS:-https://api.ipify.org https://checkip.amazonaws.com https://ifconfig.me/ip}
+      - FAILOVER_RESCUE_INTERVAL=${FAILOVER_RESCUE_INTERVAL:-900}
     volumes:
       # -2: fresh state store. The original ts-bridge-state volume (written by
       # older tailscale/tailscale:latest containers) made tailscaled/containerboot

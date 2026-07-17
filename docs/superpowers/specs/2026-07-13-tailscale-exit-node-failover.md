@@ -80,6 +80,15 @@ restart).
   after container start (WAHA is booting too). A full WAHA-container restart is
   neither possible from inside compose on Coolify (no docker socket) nor needed —
   the proxy endpoint sessions point at never changes.
+- **Session rescue** (added 2026-07-17 after sessions sat FAILED for 3 days
+  behind a healthy proxy — restart-on-switch only fires on tier *change*):
+  whenever the active path is healthy, at most once per
+  `FAILOVER_RESCUE_INTERVAL` (900s), FAILED sessions on this proxy are examined:
+  - `me != null` (paired creds intact) → restarted; reconnects from stored auth.
+  - `me == null` (creds wiped — WhatsApp logged the device out) → **restart
+    cannot help**; it would only generate QR codes nobody scans (Meta-visible
+    churn). Logged as an `error` event `sessions need QR re-scan` instead —
+    a human must re-pair by scanning the QR.
 
 ### Why single-container (watchdog inside ts-bridge)
 
