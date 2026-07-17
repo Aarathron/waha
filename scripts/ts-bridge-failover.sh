@@ -49,6 +49,7 @@ CONTAINERBOOT="${FAILOVER_CONTAINERBOOT:-/usr/local/bin/containerboot}"
 VERIFY_TRIES="${FAILOVER_VERIFY_TRIES:-6}"
 VERIFY_SLEEP="${FAILOVER_VERIFY_SLEEP:-10}"
 STARTUP_GRACE="${FAILOVER_STARTUP_GRACE:-90}"
+RESCUE_INTERVAL="${FAILOVER_RESCUE_INTERVAL:-900}"
 
 # --- state ---
 CURRENT_TIER=2            # containerboot starts with no exit node = direct
@@ -66,6 +67,7 @@ LOOP_N=0
 # Set when sockets were invalidated (exit node flipped) but no working path was
 # found to restart sessions over; the restart runs as soon as a path answers.
 PENDING_RESTART=0
+LAST_RESCUE_TS=0
 
 now() { date +%s; }
 
@@ -267,6 +269,44 @@ restart_sessions() {
   log_event sessions_restart "" "" "$rs_reason" "restarted:$results"
 }
 
+# rescue_failed_sessions — sessions can die (FAILED) without any egress switch
+# happening: a blip during boot, WhatsApp closing sockets, etc. Nothing else
+# restarts them (restart-on-switch only fires on tier CHANGE — learned the hard
+# way when sessions sat FAILED for 3 days behind a perfectly healthy proxy).
+# Runs on a healthy path, at most once per RESCUE_INTERVAL:
+#   - FAILED with paired creds (me != null): restart — reconnects from stored auth.
+#   - FAILED without creds (me == null): restart would only churn QR codes nobody
+#     scans (and QR registration attempts are Meta-visible churn) — log loudly
+#     for a human instead; only a QR re-scan can fix these.
+rescue_failed_sessions() {
+  [ "$(now)" -ge "$STARTUP_GRACE_UNTIL" ] || return 0
+  [ $(($(now) - LAST_RESCUE_TS)) -ge "$RESCUE_INTERVAL" ] || return 0
+  [ -n "$WAHA_API_KEY" ] || return 0
+  case "$WAHA_API_KEY" in sha512:*) return 0 ;; esac
+  rf_list=$(curl -sf -m 10 -H "X-Api-Key: $WAHA_API_KEY" "$WAHA_URL/api/sessions" 2>/dev/null) || return 0
+  [ -n "$rf_list" ] || return 0
+  LAST_RESCUE_TS=$(now)
+  rf_dead=$(printf %s "$rf_list" | jq -r \
+    '[.[] | select(.config.proxy.server == "ts-bridge:8080") | select(.status == "FAILED") | select(.me == null) | .name] | join(" ")' 2>/dev/null)
+  if [ -n "$rf_dead" ]; then
+    log_event error "" "" "sessions need QR re-scan" \
+      "FAILED with no paired creds (me=null); restart cannot recover them, scan QR: $rf_dead"
+  fi
+  rf_names=$(printf %s "$rf_list" | jq -r \
+    '.[] | select(.config.proxy.server == "ts-bridge:8080") | select(.status == "FAILED") | select(.me != null) | .name | @uri' 2>/dev/null)
+  [ -n "$rf_names" ] || return 0
+  rf_results=""
+  for rf_n in $rf_names; do
+    if curl -sf -m 20 -X POST -H "X-Api-Key: $WAHA_API_KEY" \
+         "$WAHA_URL/api/sessions/$rf_n/restart" >/dev/null 2>&1; then
+      rf_results="$rf_results $rf_n:ok"
+    else
+      rf_results="$rf_results $rf_n:FAILED"
+    fi
+  done
+  log_event sessions_rescue "" "" "FAILED sessions on healthy path" "restarted:$rf_results"
+}
+
 # try_switch <new_tier> <reason> — the ONLY place the exit node changes.
 # Applies the tier, verifies end-to-end through the proxy, and only then
 # commits state + logs + restarts sessions. On a failed PROMOTION the old
@@ -463,6 +503,7 @@ while :; do
       restart_sessions "path recovered after total outage"
       PENDING_RESTART=0
     fi
+    rescue_failed_sessions
   else
     FAIL_COUNT=$((FAIL_COUNT + 1))
     LAST_PROXY_IP="CHECK_FAILED"
