@@ -50,6 +50,17 @@ VERIFY_TRIES="${FAILOVER_VERIFY_TRIES:-6}"
 VERIFY_SLEEP="${FAILOVER_VERIFY_SLEEP:-10}"
 STARTUP_GRACE="${FAILOVER_STARTUP_GRACE:-90}"
 RESCUE_INTERVAL="${FAILOVER_RESCUE_INTERVAL:-900}"
+# Self-heal: tailscaled's persisted state (TS_STATE_DIR volume) can get into a
+# shape that deterministically kills containerboot at every boot — seen twice:
+# 2026-07-14 (state written by an older tailscale died pre-login on v1.98.8)
+# and 2026-07-17 (a runtime `tailscale set --exit-node-allow-lan-access` pref
+# persisted, and containerboot's `tailscale up` then refused to run without
+# mentioning it → 9h crash-loop, all sessions lost). After this many
+# CONSECUTIVE startup deaths the watchdog wipes the state dir so the next boot
+# re-registers cleanly via TS_AUTHKEY. 0 disables the wipe.
+STATE_DIR="${TS_STATE_DIR:-/var/lib/tailscale}"
+BOOT_FAIL_WIPE_THRESHOLD="${FAILOVER_BOOT_FAIL_WIPE_THRESHOLD:-3}"
+BOOT_FAIL_FILE="$STATE_DIR/.watchdog-consecutive-boot-failures"
 
 # --- state ---
 CURRENT_TIER=2            # containerboot starts with no exit node = direct
@@ -167,11 +178,35 @@ proxy_check() {
 
 # apply_tier <tier> — returns tailscale's exit status; a failed `tailscale set`
 # must never be treated as a completed switch.
+# The direct tier must reset EVERY pref a phone tier sets: any pref left
+# non-default persists in TS_STATE_DIR, and containerboot's next `tailscale up`
+# refuses to start unless it mentions all non-default prefs (crash-looped the
+# bridge for 9h on 2026-07-17). TS_EXTRA_ARGS=--reset in compose is the
+# backstop; this keeps the state clean in the first place.
 apply_tier() {
   if [ "$1" -eq 2 ]; then
-    $TSC set --exit-node= >/dev/null 2>&1
+    $TSC set --exit-node= --exit-node-allow-lan-access=false >/dev/null 2>&1
   else
     $TSC set --exit-node="$(tier_ip "$1")" --exit-node-allow-lan-access=true >/dev/null 2>&1
+  fi
+}
+
+# boot-failure bookkeeping — the counter lives in the persisted state dir so it
+# survives container restarts (each crash-loop iteration is a fresh process).
+note_boot_success() { rm -f "$BOOT_FAIL_FILE" 2>/dev/null || true; }
+
+note_boot_failure_and_maybe_wipe() {
+  nb_n=$(cat "$BOOT_FAIL_FILE" 2>/dev/null || echo 0)
+  case "$nb_n" in '' | *[!0-9]*) nb_n=0 ;; esac
+  nb_n=$((nb_n + 1))
+  echo "$nb_n" > "$BOOT_FAIL_FILE" 2>/dev/null || true
+  [ "$BOOT_FAIL_WIPE_THRESHOLD" -gt 0 ] || return 0
+  if [ "$nb_n" -ge "$BOOT_FAIL_WIPE_THRESHOLD" ]; then
+    log_event error "" "" "wiping tailscaled state" \
+      "containerboot died during startup ${nb_n}x consecutively; deleting persisted state in $STATE_DIR so the next boot re-registers via TS_AUTHKEY"
+    find "$STATE_DIR" -mindepth 1 -maxdepth 1 ! -name "$(basename "$BOOT_FAIL_FILE")" \
+      -exec rm -rf {} + 2>/dev/null || true
+    echo 0 > "$BOOT_FAIL_FILE" 2>/dev/null || true
   fi
 }
 
@@ -207,9 +242,14 @@ derive_tier() {
 restart_sessions() {
   rs_reason="${1:-egress switched}"
   if [ "$(now)" -lt "$STARTUP_GRACE_UNTIL" ]; then
-    log_event sessions_restart "" "" "skipped" "within ${STARTUP_GRACE}s startup grace (waha is booting)"
+    # DEFER, don't drop: ts-bridge restarting alone (waha container untouched)
+    # still leaves the sessions' sockets dead — the main loop retries once the
+    # grace passes and a path answers.
+    PENDING_RESTART=1
+    log_event sessions_restart "" "" "deferred" "within ${STARTUP_GRACE}s startup grace; will retry after grace"
     return 0
   fi
+  PENDING_RESTART=0
   if [ -z "$WAHA_API_KEY" ]; then
     log_event error "" "" "no WAHA_API_KEY" "cannot restart sessions after egress switch"
     return 1
@@ -345,7 +385,6 @@ try_switch() {
     log_event switch "$(tier_name "$old")" "$(tier_name "$new")" "$reason" "verified egress=$LAST_PROXY_IP"
     if [ "$new" != "$old" ]; then
       restart_sessions
-      PENDING_RESTART=0
     fi
     return 0
   fi
@@ -405,6 +444,12 @@ demote() {
   return 1
 }
 
+# Test hook: unit tests source this file for its functions only.
+if [ "${FAILOVER_TEST_SOURCE_ONLY:-0}" = "1" ]; then
+  STARTUP_GRACE_UNTIL=0
+  return 0 2>/dev/null || exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # bootstrap
 # ---------------------------------------------------------------------------
@@ -438,10 +483,14 @@ ensure_table
 waits=0
 while :; do
   st=$($TSC status --json 2>/dev/null | jq -r '.BackendState // "unknown"' 2>/dev/null)
-  [ "$st" = "Running" ] && break
+  if [ "$st" = "Running" ]; then
+    note_boot_success
+    break
+  fi
   if ! kill -0 "$BOOT_PID" 2>/dev/null; then
     log_event error "" "" "containerboot died during startup" \
       "backend state was: $st; boot log tail: $(boot_tail)"
+    note_boot_failure_and_maybe_wipe
     exit 1
   fi
   waits=$((waits + 1))
@@ -466,6 +515,9 @@ while [ "$t" -le 2 ]; do
   fi
   t=$((t + 1))
 done
+
+# Test hook: integration tests stop here instead of entering the infinite loop.
+[ "${FAILOVER_TEST_EXIT_AFTER_STARTUP:-0}" = "1" ] && exit 0
 
 # ---------------------------------------------------------------------------
 # main loop
@@ -501,7 +553,6 @@ while :; do
     FAIL_COUNT=0
     if [ "$PENDING_RESTART" -eq 1 ]; then
       restart_sessions "path recovered after total outage"
-      PENDING_RESTART=0
     fi
     rescue_failed_sessions
   else
