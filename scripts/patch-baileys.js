@@ -29,8 +29,8 @@ const patches = [
   },
   {
     file: path.join(BAILEYS_ROOT, 'Defaults', 'index.js'),
-    find: '[2, 3000, 1027934701]',
-    replace: '[2, 3000, 1034386130]',
+    find: '[2, 3000, 1035920091]',
+    replace: '[2, 3000, 1035920091]',
   },
 ];
 
