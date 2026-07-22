@@ -39,13 +39,13 @@ const patches = [
     replace: '[2, 3000, 1035920091]',
   },
 
-  // --- TEMPORARY DIAGNOSTIC (remove after root-causing media upload) ---
+  // --- Surface real media-upload errors (observability) ---
   // getWAUploadToServer swallows the HTTP status on failed uploads and only
   // logs per-host errors to stdout (which we cannot read on this host).
-  // These four patches capture the real HTTP status + WA response body and
-  // surface them in the thrown Boom's `data`, so `POST /api/sendImage` returns
-  // the actual reason (403 auth / 4xx / ENOTFOUND) instead of the opaque
-  // "Media upload failed on all hosts".
+  // These four patches make the uploader reject with the real HTTP status +
+  // WA response body and carry the last per-host error into the thrown Boom's
+  // `data`, so `POST /api/sendImage` returns the actual reason (403 auth /
+  // 4xx / ENOTFOUND) instead of the opaque "Media upload failed on all hosts".
   //
   // 1. Make the Node http uploader reject (with statusCode + body) on >= 400
   //    instead of resolving an empty body.
