@@ -400,10 +400,13 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     }
     return {
       agent: agents?.socket,
-      // Baileys types still expect a Node https.Agent here,
-      // but 'undici' fetch requires a Dispatcher.
-      // Cast keeps the compiler satisfied while we pass the ProxyAgent at runtime.
-      fetchAgent: agents?.fetch as unknown as Agent,
+      // fetchAgent is consumed only by Baileys' media upload (getWAUploadToServer),
+      // which on the Node runtime uploads via the core `https` module. That path
+      // requires a real Node https.Agent — passing an undici ProxyAgent throws
+      // `options.agent must be an Agent-like Object` and every media send fails
+      // with "Media upload failed on all hosts". So reuse the Node HttpsProxyAgent
+      // (agents.socket), NOT the undici ProxyAgent (agents.fetch).
+      fetchAgent: agents?.socket as unknown as Agent,
       auth: state,
       printQRInTerminal: false,
       browser: browser,
