@@ -5,9 +5,13 @@
  * registrations, and rejects severely outdated version strings with 405.
  * Baileys hardcodes both values with no SocketConfig override for Platform.
  *
- * This script surgically replaces:
- *   1. Platform.WEB  → Platform.MACOS  in validate-connection.js
- *   2. Version [2, 3000, 1027934701] → [2, 3000, 1034386130] in Defaults/index.js
+ * This script surgically:
+ *   1. Replaces Platform.WEB → Platform.MACOS in validate-connection.js.
+ *   2. Pins the WA web version [2, 3000, 1035920091] in Defaults/index.js.
+ *      fork-master-2026-04-28 already ships this token, so the entry is a
+ *      no-op assertion (find === replace). If WhatsApp later rejects it,
+ *      set `find` to the token the fork ships and `replace` to the newly
+ *      required one to perform a real substitution.
  */
 const fs = require('fs');
 const path = require('path');
@@ -28,9 +32,11 @@ const patches = [
     replace: 'Platform.MACOS',
   },
   {
+    // No-op assertion: fork-master-2026-04-28 already ships this token.
+    // Change `find`/`replace` to substitute a newer version when WA demands it.
     file: path.join(BAILEYS_ROOT, 'Defaults', 'index.js'),
-    find: '[2, 3000, 1027934701]',
-    replace: '[2, 3000, 1034386130]',
+    find: '[2, 3000, 1035920091]',
+    replace: '[2, 3000, 1035920091]',
   },
 ];
 
