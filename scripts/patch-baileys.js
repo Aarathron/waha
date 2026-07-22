@@ -38,6 +38,43 @@ const patches = [
     find: '[2, 3000, 1035920091]',
     replace: '[2, 3000, 1035920091]',
   },
+
+  // --- TEMPORARY DIAGNOSTIC (remove after root-causing media upload) ---
+  // getWAUploadToServer swallows the HTTP status on failed uploads and only
+  // logs per-host errors to stdout (which we cannot read on this host).
+  // These four patches capture the real HTTP status + WA response body and
+  // surface them in the thrown Boom's `data`, so `POST /api/sendImage` returns
+  // the actual reason (403 auth / 4xx / ENOTFOUND) instead of the opaque
+  // "Media upload failed on all hosts".
+  //
+  // 1. Make the Node http uploader reject (with statusCode + body) on >= 400
+  //    instead of resolving an empty body.
+  {
+    file: path.join(BAILEYS_ROOT, 'Utils', 'messages-media.js'),
+    find: 'resolve(JSON.parse(body));',
+    replace:
+      "if (res.statusCode >= 400) { const __e = new Error('HTTP ' + res.statusCode); __e.statusCode = res.statusCode; __e.body = String(body).slice(0, 300); return reject(__e); } resolve(JSON.parse(body));",
+  },
+  // 2. Declare an outer var to carry the last per-host error out of the catch.
+  {
+    file: path.join(BAILEYS_ROOT, 'Utils', 'messages-media.js'),
+    find: 'let urls;',
+    replace: 'let urls; let __diagErr;',
+  },
+  // 3. Capture the error inside the catch block.
+  {
+    file: path.join(BAILEYS_ROOT, 'Utils', 'messages-media.js'),
+    find: 'const isLast = hostname === hosts[uploadInfo.hosts.length - 1]?.hostname;',
+    replace:
+      "const isLast = hostname === hosts[uploadInfo.hosts.length - 1]?.hostname; __diagErr = { name: error?.name, message: error?.message, code: error?.code, statusCode: error?.statusCode, body: error?.body, cause_code: error?.cause?.code, cause_errno: error?.cause?.errno, cause_message: error?.cause?.message };",
+  },
+  // 4. Surface it in the thrown Boom.
+  {
+    file: path.join(BAILEYS_ROOT, 'Utils', 'messages-media.js'),
+    find: "throw new Boom('Media upload failed on all hosts', { statusCode: 500 });",
+    replace:
+      "throw new Boom('Media upload failed on all hosts', { statusCode: 500, data: __diagErr });",
+  },
 ];
 
 let applied = 0;
