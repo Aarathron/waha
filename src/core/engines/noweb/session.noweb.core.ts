@@ -652,6 +652,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
           this.qr.save('');
           this.permanentRestartAttempted = false;
           this.logoutRetryCount = 0;
+          this.statusTracker.resetDisconnectCode();
           this.status = WAHASessionStatus.WORKING;
           return;
         } else if (connection === 'close') {
@@ -684,19 +685,26 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
     const error = lastDisconnect?.error as any;
     const statusCode: number | undefined = error?.output?.statusCode;
-    let action = classifyDisconnect(statusCode);
+    const action = classifyDisconnect(statusCode);
 
-    // Safety net: if the same code keeps repeating (regardless of classifier
-    // category), upgrade to PERMANENT. This catches unknown codes that the
-    // classifier doesn't yet recognize as permanent.
+    // Safety net: if the same transient code keeps repeating with no
+    // successful connection in between, stop retrying — but do NOT wipe
+    // credentials. Repeated transients are almost always network/proxy
+    // outages (e.g. proxy exit-IP flaps), not dead auth; wiping here forces
+    // a needless QR re-scan. Going FAILED with creds intact lets the
+    // ts-bridge watchdog (or a manual restart) recover the session from
+    // stored auth once the path is healthy again. Genuinely dead auth is
+    // handled by the classifier via explicit codes (401/403/405).
     const isRepeatedCode =
       this.statusTracker.trackDisconnectCode(statusCode);
     if (action === DisconnectAction.TRANSIENT && isRepeatedCode) {
-      this.logger.warn(
+      this.logger.error(
         { statusCode },
-        'Disconnect code repeated — upgrading to PERMANENT',
+        'Transient disconnect code repeated with no successful connection in between — ' +
+          'setting session to FAILED, keeping credentials for later recovery',
       );
-      action = DisconnectAction.PERMANENT;
+      await this.failed();
+      return;
     }
 
     // Log at severity appropriate to the action

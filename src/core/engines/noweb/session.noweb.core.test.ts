@@ -591,9 +591,9 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   // 7. Safety net — transient code repeat upgrade
   // -----------------------------------------------------------------------
   describe('safety net', () => {
-    it('same transient code 3x upgrades to PERMANENT handling', async () => {
+    it('same transient code 3x sets FAILED without wiping auth', async () => {
       session.status = WAHASessionStatus.WORKING;
-      // Simulate established auth so the upgrade triggers full PERMANENT path
+      // Simulate established auth — it must survive the escalation
       (session as any).authNOWEBStore = {
         state: { creds: { me: { id: '123@s.whatsapp.net' } } },
         close: jest.fn(),
@@ -610,15 +610,48 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
         (session as any).startDelayedJob.cancel();
       }
 
-      // Third time — triggers PERMANENT path
+      // Third time — escalates to FAILED, but creds stay intact so a
+      // later restart (watchdog rescue) can reconnect without a QR scan
       await emitConnectionUpdate(session, {
         connection: 'close',
         lastDisconnect: makeDisconnect(408),
       });
 
-      // On upgrade to PERMANENT, cleanupAuthOnLogout is called
-      expect((session as any).cleanupAuthOnLogout).toHaveBeenCalled();
-      expect((session as any).permanentRestartAttempted).toBe(true);
+      expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
+      expect(session.status).toBe(WAHASessionStatus.FAILED);
+      expect((session as any).shouldRestart).toBe(false);
+    });
+
+    it('successful connection resets the repeat streak', async () => {
+      session.status = WAHASessionStatus.WORKING;
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
+
+      // Two transient drops with the same code
+      for (let i = 0; i < 2; i++) {
+        await emitConnectionUpdate(session, {
+          connection: 'close',
+          lastDisconnect: makeDisconnect(408),
+        });
+        (session as any).startDelayedJob.cancel();
+      }
+
+      // Reconnect succeeds — streak must reset
+      await emitConnectionUpdate(session, { connection: 'open' });
+
+      // Two more drops with the same code: still below threshold
+      for (let i = 0; i < 2; i++) {
+        await emitConnectionUpdate(session, {
+          connection: 'close',
+          lastDisconnect: makeDisconnect(408),
+        });
+        (session as any).startDelayedJob.cancel();
+      }
+
+      expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
+      expect(session.status).not.toBe(WAHASessionStatus.FAILED);
     });
 
     it('different codes reset the counter (no upgrade)', async () => {
