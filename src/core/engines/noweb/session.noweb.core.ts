@@ -3,6 +3,7 @@ import makeWASocket, {
   Chat,
   Contact,
   decryptPollVote,
+  DisconnectReason,
   downloadMediaMessage,
   extractMessageContent,
   fetchLatestBaileysVersion,
@@ -255,6 +256,20 @@ const ToEnginePresenceStatus = flipObject(PresenceStatuses);
 
 export class WhatsappSessionNoWebCore extends WhatsappSession {
   private START_ATTEMPT_DELAY_SECONDS = 2;
+  // Exponential-backoff reconnect: the delay doubles from START_ATTEMPT_DELAY
+  // up to BACKOFF_MAX so a flaky proxy is not hammered every 2s, and 3 quick
+  // failures no longer collapse into a ~6s give-up window. Reset to 0 on a
+  // successful 'open'.
+  private reconnectAttempts = 0;
+  private readonly BACKOFF_MAX_SECONDS = 60;
+  // A repeated-transient streak only escalates to FAILED after it has PERSISTED
+  // this long. Below the threshold the session keeps retrying — routine CGNAT
+  // rotations / brief proxy blips (tens of seconds) must not fail a recoverable
+  // session. Only a genuinely sustained outage crosses it.
+  private readonly MIN_TRANSIENT_FAILURE_WINDOW_MS = 3 * 60 * SECOND;
+  // Number of 440 connectionReplaced conflicts (within StatusTracker's window)
+  // that means two clients are fighting over the session, not a one-off takeover.
+  private readonly CONFLICT_THRESHOLD = 5;
   // Periodic forced restart of the socket. Disabled by default (0) — a real
   // companion device holds a persistent connection, so timer-based reconnects are
   // bot-like churn that hurts longevity rather than helping. Opt in via
@@ -442,10 +457,24 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       );
     }
 
+    // This fetch is on the (re)connect critical path. fetchLatestBaileysVersion
+    // is passed an AbortSignal, but the fork's implementation does not reliably
+    // honor it, so a hung request could otherwise stall every reconnect for
+    // minutes. Race it against a hard timeout that we control, and fall back to
+    // the baked Baileys default (undefined) so reconnection always proceeds.
+    const FETCH_TIMEOUT_MS = 10_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const { version } = await fetchLatestBaileysVersion({
-        signal: AbortSignal.timeout(10_000),
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`WA version fetch exceeded ${FETCH_TIMEOUT_MS}ms`)),
+          FETCH_TIMEOUT_MS,
+        );
       });
+      const { version } = await Promise.race([
+        fetchLatestBaileysVersion({ signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }),
+        timeout,
+      ]);
       this.logger.info(`Fetched latest WA version: ${version}`);
       return version;
     } catch (err) {
@@ -453,6 +482,10 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
         `Failed to fetch WA version, using Baileys default: ${err}`,
       );
       return undefined;
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
     }
   }
 
@@ -624,6 +657,20 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     });
   }
 
+  /**
+   * Delay before the next reconnect attempt: exponential backoff from
+   * START_ATTEMPT_DELAY_SECONDS, doubling each attempt, capped at
+   * BACKOFF_MAX_SECONDS. The attempt counter resets on a successful 'open'.
+   */
+  private nextReconnectDelayMs(): number {
+    const seconds = Math.min(
+      this.START_ATTEMPT_DELAY_SECONDS * 2 ** this.reconnectAttempts,
+      this.BACKOFF_MAX_SECONDS,
+    );
+    this.reconnectAttempts += 1;
+    return seconds * SECOND;
+  }
+
   private restartClient() {
     if (!this.shouldRestart) {
       this.logger.debug(
@@ -632,6 +679,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       return;
     }
 
+    const delayMs = this.nextReconnectDelayMs();
     this.startDelayedJob.schedule(async () => {
       if (!this.shouldRestart) {
         this.logger.warn(
@@ -641,7 +689,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       }
       await this.end();
       await this.start();
-    });
+    }, delayMs);
   }
 
   protected listenConnectionEvents() {
@@ -655,6 +703,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
           this.qr.save('');
           this.permanentRestartAttempted = false;
           this.logoutRetryCount = 0;
+          this.reconnectAttempts = 0;
           this.statusTracker.resetDisconnectCode();
           this.status = WAHASessionStatus.WORKING;
           return;
@@ -690,24 +739,62 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     const statusCode: number | undefined = error?.output?.statusCode;
     const action = classifyDisconnect(statusCode);
 
-    // Safety net: if the same transient code keeps repeating with no
-    // successful connection in between, stop retrying — but do NOT wipe
-    // credentials. Repeated transients are almost always network/proxy
-    // outages (e.g. proxy exit-IP flaps), not dead auth; wiping here forces
-    // a needless QR re-scan. Going FAILED with creds intact lets the
-    // ts-bridge watchdog (or a manual restart) recover the session from
-    // stored auth once the path is healthy again. Genuinely dead auth is
+    // 440 connectionReplaced: another client connected with the same creds and
+    // kicked us off. One occurrence is normal (a device took over once), so we
+    // reconnect. But a burst means two clients are fighting over the session —
+    // each reconnect kicks the other, producing high-frequency connect/disconnect
+    // churn (a ban signal) that never ends on its own. The conflict counter uses
+    // a time window that deliberately survives the successful 'open' between
+    // cycles (unlike the same-code streak, which resets on every 'open').
+    if (statusCode === DisconnectReason.connectionReplaced) {
+      const conflicts = this.statusTracker.trackConflict();
+      if (conflicts >= this.CONFLICT_THRESHOLD) {
+        this.logger.error(
+          { statusCode, conflicts },
+          'Repeated 440 connectionReplaced — another client owns this session. ' +
+            'Stopping auto-reconnect and keeping credentials; restart once the ' +
+            'other client is gone.',
+        );
+        this.statusTracker.resetConflicts();
+        await this.failed();
+        return;
+      }
+      this.logger.warn(
+        { statusCode, conflicts },
+        'Connection replaced by another client (440), reconnecting...',
+      );
+      this.restartClient();
+      return;
+    }
+
+    // Safety net: if the same transient code keeps repeating with no successful
+    // connection in between, we may stop retrying — but do NOT wipe credentials
+    // (repeated transients are network/proxy outages, not dead auth). Crucially,
+    // we only give up once the streak has PERSISTED past a minimum window: a
+    // routine CGNAT rotation drops the socket for tens of seconds and would
+    // otherwise trip the 3-strike counter in ~6s, failing a session that would
+    // reconnect on its own. Below the window we keep retrying (with backoff);
+    // above it, we go FAILED with creds intact so the ts-bridge watchdog (or a
+    // manual restart) can recover from stored auth. Genuinely dead auth is
     // handled by the classifier via explicit codes (401/403/405).
     const isRepeatedCode =
       this.statusTracker.trackDisconnectCode(statusCode);
     if (action === DisconnectAction.TRANSIENT && isRepeatedCode) {
-      this.logger.error(
-        { statusCode },
-        'Transient disconnect code repeated with no successful connection in between — ' +
-          'setting session to FAILED, keeping credentials for later recovery',
+      const elapsedMs = this.statusTracker.streakElapsedMs();
+      if (elapsedMs >= this.MIN_TRANSIENT_FAILURE_WINDOW_MS) {
+        this.logger.error(
+          { statusCode, elapsedMs },
+          'Transient disconnect persisted past the retry window — setting ' +
+            'session to FAILED, keeping credentials for later recovery',
+        );
+        await this.failed();
+        return;
+      }
+      this.logger.warn(
+        { statusCode, elapsedMs },
+        'Transient disconnect code repeated but still within the retry window — ' +
+          'continuing to reconnect with backoff',
       );
-      await this.failed();
-      return;
     }
 
     // Log at severity appropriate to the action
@@ -769,6 +856,21 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     statusCode: number | undefined,
     lastDisconnect: any,
   ) {
+    // A permanent-category close that arrives while the session is being stopped
+    // is a side effect of shutdown, NOT dead auth. stop()/failed() set
+    // shouldRestart=false; the only legitimate credential wipe is an explicit
+    // user logout, which comes through unpair() and sets `unpairing`. Wiping
+    // here would destroy still-valid creds (and their backups) because a routine
+    // 428->401 cascade landed in the shutdown window — forcing a needless QR
+    // re-scan. Bail out and let stop()/failed() finish.
+    if (!this.shouldRestart && !this.unpairing) {
+      this.logger.warn(
+        { statusCode },
+        'Permanent-category disconnect while stopping — not wiping auth state',
+      );
+      return;
+    }
+
     // If the session has never paired (no creds.me), this is a registration/
     // pairing rejection (e.g. 405 during initial handshake), not stale auth.
     // Retry without setting the guard flag — the statusTracker.isStuckInStarting()
@@ -788,15 +890,21 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       return;
     }
 
-    // For 401 (loggedOut), retry once with existing credentials before wiping.
-    // The 428→401 cascade is a well-known Baileys false-positive; a single retry
-    // with the same creds often recovers the session.
-    if (statusCode === 401) {
-      if (this.logoutRetryCount === 0 && this.shouldRestart) {
+    // For 401 (loggedOut) and 405 (client/version rejection), retry ONCE with
+    // the existing credentials before wiping:
+    //   - 401: the 428→401 cascade is a well-known Baileys false-positive; a
+    //     single retry with the same creds often recovers the session.
+    //   - 405: usually means an outdated/incompatible WA version, not dead auth.
+    //     Wiping valid creds over a version problem forces a QR re-scan for
+    //     nothing. (Pin WAHA_WA_VERSION in prod to avoid hitting this at all.)
+    // A genuine user logout comes through unpair() (unpairing=true) and skips
+    // this grace so it wipes immediately. 403 (forbidden/banned) is not retried.
+    if ((statusCode === 401 || statusCode === 405) && !this.unpairing) {
+      if (this.logoutRetryCount === 0) {
         this.logoutRetryCount = 1;
         this.logger.warn(
           { statusCode },
-          'Received 401 (loggedOut), retrying once with existing credentials before wiping auth state...',
+          'Received permanent-category code, retrying once with existing credentials before wiping auth state...',
         );
         this.restartClient();
         return;
@@ -804,7 +912,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
       this.logger.error(
         { statusCode },
-        'Received 401 (loggedOut) after retry. Genuine logout, wiping auth state.',
+        'Permanent-category code recurred after retry. Treating as genuine, wiping auth state.',
       );
       this.logoutRetryCount = 0;
     }

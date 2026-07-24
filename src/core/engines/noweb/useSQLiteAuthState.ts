@@ -372,15 +372,32 @@ export const useSQLiteAuthState = async (
     await migrateFromFiles(knex, session, opts.migrateFromFolder, log);
   }
 
-  let creds = (await readRow(
-    knex,
-    session,
-    CREDS_CATEGORY,
-    CREDS_ID,
-  )) as AuthenticationCreds | null;
+  let creds: AuthenticationCreds | null = null;
+  // Whether the creds row physically exists. A row that exists but is corrupt
+  // (JSON.parse throws) must go through backup recovery — NOT be treated as
+  // "no creds, start fresh", which would silently drop a paired session and
+  // force a QR re-scan. Without this guard, the parse exception propagates out
+  // of buildAuth and the session loops STARTING->FAILED forever, never touching
+  // the valid backups sitting in the same database.
+  let credsRowExists = false;
+  try {
+    creds = (await readRow(
+      knex,
+      session,
+      CREDS_CATEGORY,
+      CREDS_ID,
+    )) as AuthenticationCreds | null;
+    credsRowExists = creds !== null;
+  } catch (err: any) {
+    log?.warn(
+      `Credentials row for session '${session}' is unreadable (${err?.message ?? String(err)}), attempting backup recovery`,
+    );
+    creds = null;
+    credsRowExists = true;
+  }
 
   if (!validateCreds(creds)) {
-    if (creds !== null) {
+    if (credsRowExists) {
       log?.warn(
         `Credentials for session '${session}' failed integrity check, attempting backup recovery`,
       );
