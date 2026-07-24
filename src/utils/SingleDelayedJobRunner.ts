@@ -26,13 +26,21 @@ export class SingleDelayedJobRunner {
     return !!this.timeout;
   }
 
-  schedule(fn: FunctionNoArgs): boolean {
+  /**
+   * Schedule the job to run after a delay.
+   *
+   * @param fn        the job to run
+   * @param delayMs   optional per-call delay override (e.g. exponential
+   *                  backoff). Defaults to the runner's configured timeout.
+   */
+  schedule(fn: FunctionNoArgs, delayMs?: number): boolean {
     if (this.scheduled) {
       const msg = `Job has been started before, do not schedule it again`;
       this.log(this.warningOverride, msg);
       return false;
     }
 
+    const delay = delayMs ?? this.timeoutMs;
     this.timeout = setTimeout(() => {
       this.logger.debug(`Running job...`);
       fn()
@@ -44,8 +52,8 @@ export class SingleDelayedJobRunner {
           this.timeout = null;
           this.logger.debug(`Job finished`);
         });
-    }, this.timeoutMs);
-    this.logger.info(`Job scheduled with timeout ${this.timeoutMs} ms`);
+    }, delay);
+    this.logger.info(`Job scheduled with timeout ${delay} ms`);
     return true;
   }
 

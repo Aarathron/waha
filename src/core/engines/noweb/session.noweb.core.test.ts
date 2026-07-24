@@ -11,6 +11,18 @@ jest.mock('@adiwajshing/baileys', () => ({
     windows: jest.fn(),
   },
   fetchLatestBaileysVersion: jest.fn(),
+  DisconnectReason: {
+    connectionClosed: 428,
+    connectionLost: 408,
+    connectionReplaced: 440,
+    timedOut: 408,
+    loggedOut: 401,
+    badSession: 500,
+    restartRequired: 515,
+    multideviceMismatch: 411,
+    forbidden: 403,
+    unavailableService: 503,
+  },
   makeCacheableSignalKeyStore: jest.fn((keys) => keys),
   proto: { Message: { create: jest.fn() } },
   normalizeMessageContent: jest.fn(),
@@ -256,7 +268,9 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   // 3. PERMANENT disconnect — first occurrence
   // -----------------------------------------------------------------------
   describe('PERMANENT disconnect — first occurrence', () => {
-    it.each([403, 405])(
+    // 403 (forbidden/banned) is not retryable — wipe on first occurrence.
+    // (401 and 405 get a one-retry grace; see their dedicated tests below.)
+    it.each([403])(
       'status %d: cleans auth, sets guard flag, schedules restart',
       async (statusCode) => {
         session.status = WAHASessionStatus.WORKING;
@@ -278,6 +292,34 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
         expect((session as any).permanentRestartAttempted).toBe(true);
         // restartClient() delegates to startDelayedJob.schedule()
         expect((session as any).startDelayedJob.scheduled).toBe(true);
+      },
+    );
+
+    it.each([401, 405])(
+      'status %d: retries once with existing creds before wiping',
+      async (statusCode) => {
+        session.status = WAHASessionStatus.WORKING;
+        (session as any).authNOWEBStore = {
+          state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+          close: jest.fn(),
+        };
+
+        // First occurrence — retry, do NOT wipe
+        await emitConnectionUpdate(session, {
+          connection: 'close',
+          lastDisconnect: makeDisconnect(statusCode),
+        });
+        expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
+        expect((session as any).logoutRetryCount).toBe(1);
+        expect((session as any).startDelayedJob.scheduled).toBe(true);
+        (session as any).startDelayedJob.cancel();
+
+        // Second occurrence — genuine, wipe
+        await emitConnectionUpdate(session, {
+          connection: 'close',
+          lastDisconnect: makeDisconnect(statusCode),
+        });
+        expect((session as any).cleanupAuthOnLogout).toHaveBeenCalled();
       },
     );
 
@@ -506,14 +548,24 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
       }
     });
 
-    it('405 with established auth uses guard flag (existing behavior)', async () => {
+    it('405 with established auth: retries once, then wipes + sets guard', async () => {
       session.status = WAHASessionStatus.WORKING;
       (session as any).authNOWEBStore = {
         state: { creds: { me: { id: '123@s.whatsapp.net' } } },
         close: jest.fn(),
       };
 
-      // First 405 — should clean auth, set guard, restart
+      // First 405 — retry once with existing creds (version rejection ≠ dead auth)
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(405),
+      });
+      expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
+      expect((session as any).logoutRetryCount).toBe(1);
+      expect((session as any).startDelayedJob.scheduled).toBe(true);
+      (session as any).startDelayedJob.cancel();
+
+      // Second 405 — grace exhausted, clean auth, set guard, restart
       await emitConnectionUpdate(session, {
         connection: 'close',
         lastDisconnect: makeDisconnect(405),
@@ -521,13 +573,124 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
       expect((session as any).permanentRestartAttempted).toBe(true);
       expect((session as any).cleanupAuthOnLogout).toHaveBeenCalled();
       expect((session as any).startDelayedJob.scheduled).toBe(true);
+    });
 
-      // Second 405 — guard flag blocks, sets FAILED
+    it('permanent code during stop() (shouldRestart=false, not unpairing) does not wipe', async () => {
+      session.status = WAHASessionStatus.WORKING;
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
+      // Simulate a stop() in flight: shouldRestart cleared, NOT unpairing.
+      (session as any).shouldRestart = false;
+      (session as any).unpairing = false;
+
       await emitConnectionUpdate(session, {
         connection: 'close',
-        lastDisconnect: makeDisconnect(405),
+        lastDisconnect: makeDisconnect(401),
       });
+
+      // Creds and backups must survive — this is shutdown, not dead auth.
+      expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 440 connectionReplaced — conflict detection
+  // -----------------------------------------------------------------------
+  describe('440 connectionReplaced', () => {
+    it('reconnects on a single 440 (one-off takeover)', async () => {
+      session.status = WAHASessionStatus.WORKING;
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
+
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(440),
+      });
+
+      expect(session.status).not.toBe(WAHASessionStatus.FAILED);
+      expect((session as any).startDelayedJob.scheduled).toBe(true);
+    });
+
+    it('repeated 440 within the window stops the reconnect fight (FAILED, creds kept)', async () => {
+      session.status = WAHASessionStatus.WORKING;
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
+
+      // A conflict fight: each 440 is followed by a successful 'open' (the
+      // reconnect), which resets the same-code streak but must NOT reset the
+      // conflict counter. 5 conflicts in the window → give up.
+      for (let i = 0; i < 4; i++) {
+        await emitConnectionUpdate(session, {
+          connection: 'close',
+          lastDisconnect: makeDisconnect(440),
+        });
+        expect(session.status).not.toBe(WAHASessionStatus.FAILED);
+        (session as any).startDelayedJob.cancel();
+        await emitConnectionUpdate(session, { connection: 'open' });
+      }
+
+      // 5th conflict crosses CONFLICT_THRESHOLD
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(440),
+      });
+
       expect(session.status).toBe(WAHASessionStatus.FAILED);
+      expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
+      expect((session as any).shouldRestart).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Reconnect backoff
+  // -----------------------------------------------------------------------
+  describe('reconnect backoff', () => {
+    it('doubles the reconnect delay each attempt and resets on open', async () => {
+      session.status = WAHASessionStatus.WORKING;
+
+      const delays: number[] = [];
+      const realSchedule = (session as any).startDelayedJob.schedule.bind(
+        (session as any).startDelayedJob,
+      );
+      jest
+        .spyOn((session as any).startDelayedJob, 'schedule')
+        .mockImplementation((fn: any, delayMs?: number) => {
+          delays.push(delayMs);
+          return realSchedule(fn, delayMs);
+        });
+
+      // Three transient drops (different codes so we never escalate) —
+      // delays should be 2s, 4s, 8s.
+      for (const code of [408, 500, 503]) {
+        await emitConnectionUpdate(session, {
+          connection: 'close',
+          lastDisconnect: makeDisconnect(code),
+        });
+        (session as any).startDelayedJob.cancel();
+      }
+      expect(delays).toEqual([2000, 4000, 8000]);
+
+      // A successful connection resets the backoff.
+      await emitConnectionUpdate(session, { connection: 'open' });
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(408),
+      });
+      expect(delays[delays.length - 1]).toBe(2000);
+    });
+
+    it('caps the backoff delay at 60s', async () => {
+      session.status = WAHASessionStatus.WORKING;
+      // Drive reconnectAttempts high enough that 2 * 2^n would exceed 60s.
+      (session as any).reconnectAttempts = 10;
+      const delayMs = (session as any).nextReconnectDelayMs();
+      expect(delayMs).toBe(60_000);
     });
   });
 
@@ -591,31 +754,56 @@ describe('WhatsappSessionNoWebCore — connection resilience', () => {
   // 7. Safety net — transient code repeat upgrade
   // -----------------------------------------------------------------------
   describe('safety net', () => {
-    it('same transient code 3x sets FAILED without wiping auth', async () => {
+    it('same transient code 3x within the retry window keeps retrying (not FAILED)', async () => {
       session.status = WAHASessionStatus.WORKING;
-      // Simulate established auth — it must survive the escalation
       (session as any).authNOWEBStore = {
         state: { creds: { me: { id: '123@s.whatsapp.net' } } },
         close: jest.fn(),
       };
 
-      // Need to reset the delayed job between events so restartClient
-      // can schedule again (simulating the timer firing between events)
+      // Three quick drops, same code, no time advance — a routine proxy blip.
+      // The streak counter trips at 3 but the elapsed window is ~0, so the
+      // session must KEEP retrying rather than fail a recoverable connection.
+      for (let i = 0; i < 3; i++) {
+        await emitConnectionUpdate(session, {
+          connection: 'close',
+          lastDisconnect: makeDisconnect(408),
+        });
+        expect(session.status).not.toBe(WAHASessionStatus.FAILED);
+        expect((session as any).startDelayedJob.scheduled).toBe(true);
+        (session as any).startDelayedJob.cancel();
+      }
+
+      expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
+      expect(session.status).not.toBe(WAHASessionStatus.FAILED);
+    });
+
+    it('sustained same-code transient past the window sets FAILED without wiping auth', async () => {
+      session.status = WAHASessionStatus.WORKING;
+      (session as any).authNOWEBStore = {
+        state: { creds: { me: { id: '123@s.whatsapp.net' } } },
+        close: jest.fn(),
+      };
+
+      // First drop stamps the streak start.
+      await emitConnectionUpdate(session, {
+        connection: 'close',
+        lastDisconnect: makeDisconnect(408),
+      });
+      (session as any).startDelayedJob.cancel();
+      expect(session.status).not.toBe(WAHASessionStatus.FAILED);
+
+      // Outage persists beyond the retry window (~3 min).
+      jest.advanceTimersByTime(3 * 60 * 1000 + 1000);
+
+      // Next same-code drops now cross the window → FAILED, creds intact.
       for (let i = 0; i < 2; i++) {
         await emitConnectionUpdate(session, {
           connection: 'close',
           lastDisconnect: makeDisconnect(408),
         });
-        // Simulate the delayed job timer completing so it can be rescheduled
         (session as any).startDelayedJob.cancel();
       }
-
-      // Third time — escalates to FAILED, but creds stay intact so a
-      // later restart (watchdog rescue) can reconnect without a QR scan
-      await emitConnectionUpdate(session, {
-        connection: 'close',
-        lastDisconnect: makeDisconnect(408),
-      });
 
       expect((session as any).cleanupAuthOnLogout).not.toHaveBeenCalled();
       expect(session.status).toBe(WAHASessionStatus.FAILED);

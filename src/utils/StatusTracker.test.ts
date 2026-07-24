@@ -102,5 +102,67 @@ describe('StatusTracker', () => {
       expect(tracker.trackDisconnectCode(408)).toBe(false);
       expect(tracker.trackDisconnectCode(408)).toBe(true);
     });
+
+    it('clears the streak start timestamp', () => {
+      tracker.trackDisconnectCode(408, 1000);
+      tracker.resetDisconnectCode();
+      expect(tracker.streakElapsedMs(9999)).toBe(0);
+    });
+  });
+
+  describe('streakElapsedMs', () => {
+    it('is 0 with no active streak', () => {
+      expect(tracker.streakElapsedMs(5000)).toBe(0);
+    });
+
+    it('measures from the first disconnect of a same-code streak', () => {
+      tracker.trackDisconnectCode(408, 1000);
+      tracker.trackDisconnectCode(408, 3000);
+      tracker.trackDisconnectCode(408, 5000);
+      expect(tracker.streakElapsedMs(5000)).toBe(4000);
+    });
+
+    it('resets the start when a different code appears', () => {
+      tracker.trackDisconnectCode(408, 1000);
+      tracker.trackDisconnectCode(500, 9000);
+      expect(tracker.streakElapsedMs(9000)).toBe(0);
+    });
+
+    it('a null code clears the streak start', () => {
+      tracker.trackDisconnectCode(408, 1000);
+      tracker.trackDisconnectCode(null, 2000);
+      expect(tracker.streakElapsedMs(8000)).toBe(0);
+    });
+  });
+
+  describe('trackConflict', () => {
+    it('counts conflicts within the window', () => {
+      expect(tracker.trackConflict(1000)).toBe(1);
+      expect(tracker.trackConflict(2000)).toBe(2);
+      expect(tracker.trackConflict(3000)).toBe(3);
+    });
+
+    it('ages out conflicts older than the 2-minute window', () => {
+      tracker.trackConflict(0);
+      tracker.trackConflict(1000);
+      // 130s later — the first two are outside the 120s window
+      expect(tracker.trackConflict(130_000)).toBe(1);
+    });
+
+    it('survives (does not reset on) successful connections', () => {
+      // A conflict fight interleaves opens; the counter must keep climbing.
+      tracker.trackConflict(1000);
+      tracker.resetDisconnectCode(); // simulates an 'open' in between
+      tracker.trackConflict(2000);
+      tracker.resetDisconnectCode();
+      expect(tracker.trackConflict(3000)).toBe(3);
+    });
+
+    it('resetConflicts clears the window', () => {
+      tracker.trackConflict(1000);
+      tracker.trackConflict(2000);
+      tracker.resetConflicts();
+      expect(tracker.trackConflict(3000)).toBe(1);
+    });
   });
 });
