@@ -92,4 +92,15 @@ describe('StatusTracker', () => {
       expect(tracker.trackDisconnectCode(405)).toBe(false);
     });
   });
+
+  describe('resetDisconnectCode', () => {
+    it('clears an in-progress streak', () => {
+      tracker.trackDisconnectCode(408);
+      tracker.trackDisconnectCode(408);
+      tracker.resetDisconnectCode();
+      tracker.trackDisconnectCode(408);
+      expect(tracker.trackDisconnectCode(408)).toBe(false);
+      expect(tracker.trackDisconnectCode(408)).toBe(true);
+    });
+  });
 });

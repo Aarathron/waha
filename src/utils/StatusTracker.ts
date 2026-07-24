@@ -43,6 +43,16 @@ export class StatusTracker {
    * Note: null/undefined codes reset the consecutive counter,
    * breaking any in-progress detection streak.
    */
+  /**
+   * Reset the consecutive disconnect-code streak.
+   * Call on successful connection — a working session proves the previous
+   * disconnects were recoverable, so they must not count toward escalation.
+   */
+  public resetDisconnectCode(): void {
+    this.lastDisconnectCode = undefined;
+    this.disconnectCodeCount = 0;
+  }
+
   public trackDisconnectCode(
     statusCode: number | undefined | null,
   ): boolean {
